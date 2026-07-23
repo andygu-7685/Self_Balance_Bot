@@ -467,8 +467,8 @@ void runSpeed(){
 
 
 void update_cmd(){
-  bool set_Kp = false;
-  bool set_Kd = false;
+  // 1 = bal_K_p, 2 = bal_K_d, 3 = spd_K_p, 4 = spd_K_i
+  uint8_t set_K = 0;
 
   if(!receivedChars ||
      receivedChars[0] == '\0' || receivedChars[1] == '\0' ||
@@ -496,10 +496,16 @@ void update_cmd(){
       move_dir = 4;
       break;
     case 'p':
-      set_Kp = true;
+      set_K = 1;
       break;
     case 'd':
-      set_Kd = true;
+      set_K = 2;
+      break;
+    case 's':
+      set_K = 3;
+      break;
+    case 'i':
+      set_K = 4;
       break;
     default:
       move_dir = 0;
@@ -514,27 +520,35 @@ void update_cmd(){
   char* numStr = &receivedChars[2];
   char* endPtr = NULL;
 
-  if(set_Kp){
-    bal_K_p = static_cast<uint8_t>(strtol(numStr, &endPtr, 10)) / 100.0;
-  }
-  else if(set_Kd){
-    bal_K_d = static_cast<uint8_t>(strtol(numStr, &endPtr, 10)) / 100.0;
-  }
-  else{
-    move_time = static_cast<uint8_t>(strtol(numStr, &endPtr, 10));
-    if(endPtr && *endPtr != '\0'){
-        move_dir = 0;
-        move_bias = 0;
-        move_time = 0;
-        bias_sgn_L = 0;
-        bias_sgn_R = 0;
-        return;
-    }
+  switch(set_K){
+    case 1:
+      bal_K_p = static_cast<uint8_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      break;
+    case 2:
+      bal_K_d = static_cast<uint8_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      break;
+    case 3:
+      spd_K_p = static_cast<uint8_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      break;
+    case 4:
+      spd_K_i = static_cast<uint8_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      break;
+    default:
+      move_time = static_cast<uint8_t>(strtol(numStr, &endPtr, 10));
+      if(endPtr && *endPtr != '\0'){
+          move_dir = 0;
+          move_bias = 0;
+          move_time = 0;
+          bias_sgn_L = 0;
+          bias_sgn_R = 0;
+          return;
+      }
 
-    move_bias = 200;
-    bias_sgn_L = (int8_t)((move_dir - 1) / 2) * 2 - 1;
-    bias_sgn_R = (int8_t)((move_dir - 1) % 2) * 2 - 1;
-    lastCmdTime = millis();
+      move_bias = 200;
+      bias_sgn_L = (int8_t)((move_dir - 1) / 2) * 2 - 1;
+      bias_sgn_R = (int8_t)((move_dir - 1) % 2) * 2 - 1;
+      lastCmdTime = millis();
+      break;
   }
   runSpeed();
 }
