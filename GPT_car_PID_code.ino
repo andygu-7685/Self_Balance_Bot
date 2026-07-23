@@ -109,17 +109,29 @@ float bal_K_p = 0.5 * 0.2 * 3.5;
 
 const uint8_t bal_avg_q_size = 5;
 int16_t bal_avg_err_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
-uint8_t delta_time_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
+uint8_t bal_dt_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
 uint8_t bal_avg_q_ctr = 0;
-unsigned long last_delta_time = 0;
+unsigned long bal_last_time = 0;
 float bal_K_d = 0.3 * 0.2 * 1.0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Proportional Control (Speed Loop)
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
+// maintain speed correction that changes every 50-100ms
+int16_t spd_correction_L = 0;
+int16_t spd_correction_R = 0;
 
+int16_t spd_last_pos_L = 0;
+int16_t spd_last_pos_R = 0;
+float spd_K_p = 0;
+unsigned long spd_last_time = 0;
 
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Integral Control (Speed Loop)
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+float spd_K_i = 0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Setup
@@ -181,8 +193,8 @@ void setup() {
   // MPU6050 calibration
   MPU_calibration();
 
-  // Initialize the last delta time for derivative control
-  last_delta_time = millis();
+  bal_last_time = millis();
+  spd_last_time = millis();
 }
 
 
@@ -196,15 +208,17 @@ void setup() {
 void loop() {
 
   if (mpuInterrupt) {
-    float net_speed_L = 0;
-    float net_speed_R = 0;
+    int16_t net_speed_L = 0;
+    int16_t net_speed_R = 0;
     mpuInterrupt = false;
     runSpeed();
     
     // IMPORTANT: This clears the hardware interrupt pin on the MPU6050!
     // Without this, the physical pin stays HIGH and never triggers another RISING edge.
-    uint8_t mpuIntStatus = mpu.getIntStatus();
-    runSpeed();
+    {
+      uint8_t mpuIntStatus = mpu.getIntStatus();
+      runSpeed();
+    }
 
     //---------------------------------------------------------------------------------------------------------------------------------------------------------
     // MPU6050 measurements
@@ -212,10 +226,11 @@ void loop() {
 
     // Read raw accelerometer and gyroscope measurements
     mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+    unsigned long curr_time = millis();
     runSpeed();
 
-    uint8_t delta_time = min(millis() - last_delta_time, 200);
-    last_delta_time = millis();
+    uint8_t bal_delta_time = min(curr_time - bal_last_time, 200);
+    bal_last_time = curr_time;
     runSpeed();
 
     // unit in m/s^2
@@ -238,6 +253,8 @@ void loop() {
     (bal_err_q_ctr >= bal_err_q_size - 1) ? bal_err_q_ctr = 0 : bal_err_q_ctr++;
     runSpeed();
 
+
+
     {
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
       // Proportional Control (Balance Loop)
@@ -251,8 +268,8 @@ void loop() {
         runSpeed();
       }
       // +ive = CCW->speed +ive, -ive = CW->speed -ive
-      int32_t avg_error = sum / bal_err_q_size;
-      int32_t _p = avg_error * bal_K_p;
+      float avg_error = (float)(sum / bal_err_q_size);
+      int32_t _p = fast_round(avg_error * bal_K_p);
       if(_p < 300 * bal_K_p && _p > -300 * bal_K_p) _p = 0;
       runSpeed();
 
@@ -279,7 +296,7 @@ void loop() {
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
       bal_avg_err_q[bal_avg_q_ctr] = avg_error;
-      delta_time_q[bal_avg_q_ctr] = delta_time;
+      bal_dt_q[bal_avg_q_ctr] = bal_delta_time;
       (bal_avg_q_ctr >= bal_avg_q_size - 1) ? bal_avg_q_ctr = 0 : bal_avg_q_ctr++;
       runSpeed();
 
@@ -288,12 +305,12 @@ void loop() {
       int16_t delta_error = avg_error - bal_avg_err_q[last_error_index];
       uint8_t elapsed_time = 0;
       runSpeed();
-    
+      
       {
-        uint8_t *ptr = delta_time_q;
-        uint8_t *end = delta_time_q + bal_avg_q_size;
+        uint8_t *ptr = bal_dt_q;
+        uint8_t *end = bal_dt_q + bal_avg_q_size;
         while (ptr < end) elapsed_time += *ptr++;
-        elapsed_time -= delta_time_q[last_error_index];
+        elapsed_time -= bal_dt_q[last_error_index];
         runSpeed();
       }
 
@@ -301,38 +318,55 @@ void loop() {
       if(_d < 2 && _d > -2) _d = 0;
       runSpeed();
 
-
-
       net_speed_L += _p - sgn(_p) * abs(_d);
       net_speed_R += _p - sgn(_p) * abs(_d);
+      runSpeed();
     }
 
 
 
-    {
+    curr_time = millis();
+    if(curr_time - spd_last_time >= 80){
+
+      int16_t curr_pos_L = stepperL.currentPosition();
+      int16_t curr_pos_R = stepperR.currentPosition();
+      runSpeed();
+
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
       // Proportional Control (Speed Loop)
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
+      int16_t delta_pos_L = curr_pos_L - spd_last_pos_L;
+      int16_t delta_pos_R = curr_pos_R - spd_last_pos_R;
+      int16_t spd_delta_time = curr_time - spd_last_time;
+      spd_last_pos_L = curr_pos_L;
+      spd_last_pos_R = curr_pos_R;
+      spd_last_time = curr_time;
+      runSpeed();
 
+      int16_t _p_L = fast_round((delta_pos_L / spd_delta_time) * spd_K_p);
+      int16_t _p_R = fast_round((delta_pos_R / spd_delta_time) * spd_K_p);
+      runSpeed();
 
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
+      // Integral Control (Speed Loop)
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
+      int16_t _i_L = fast_round(curr_pos_L * spd_K_i);
+      int16_t _i_R = fast_round(curr_pos_R * spd_K_i);
+      runSpeed();
 
-
-
-
+      spd_correction_L = -_p_L - _i_L;
+      spd_correction_R = -_p_R - _i_R;
     }
 
 
-
-
-    
 
     //---------------------------------------------------------------------------------------------------------------------------------------------------------
     // Set Motor Speeds
     //---------------------------------------------------------------------------------------------------------------------------------------------------------
     
-    net_speed_L += bias_sgn_L * move_bias;
-    net_speed_R += bias_sgn_R * move_bias;
+    net_speed_L += spd_correction_L + bias_sgn_L * move_bias;
+    net_speed_R += spd_correction_R + bias_sgn_R * move_bias;
 
     if(millis() - lastSetSpeedTime >= 15){
       lastSetSpeedTime = millis();
@@ -340,7 +374,6 @@ void loop() {
       stepperR.setSpeed(net_speed_R);
     }
     runSpeed();
-
 
     #ifdef DEBUG
     if(millis() - lastPrintTime >= 500){
