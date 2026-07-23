@@ -4,16 +4,30 @@
 #include "I2Cdev.h"
 #include "MPU6050.h"
 
+
+
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Direction Convention:
+// direction toward battery opening is backward
+// positive speed rotate the wheel CCW
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Macros and Compile Options
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+
 #define sgn(x) ((x) > 0 ? 1 : ((x) < 0 ? -1 : 0))
+// #define MPU_VERBOSE
+// #define DEBUG
 
 inline int fast_round(float x) {
   return (x >= 0) ? (int)(x + 0.5) : (int)(x - 0.5);
 }
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
-// Direction Convention:
-// direction toward battery opening is backward
-// positive speed rotate the wheel CCW
+// Initialize Object and Timing
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
 MPU6050 mpu;
@@ -22,27 +36,39 @@ AccelStepper stepperL(AccelStepper::DRIVER, 11, 10);
 // Pins are fixed: RX=8, TX=9
 AltSoftSerial altSerial;
 
+unsigned long lastPrintTime = 0;
+unsigned long lastSetSpeedTime = 0;
+
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+// MPU6050 Variables
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+
 const float ACCEL_FACTOR = 9.80665 / 16384;
 const float ROT_FACTOR = 1.0 / 131.0;
 int16_t OFFSET_AX = 0;
 int16_t OFFSET_AY = 0;
 int16_t OFFSET_AZ = 0;
+#ifdef MPU_VERBOSE
 int16_t OFFSET_GX = 0;
 int16_t OFFSET_GY = 0;
 int16_t OFFSET_GZ = 0;
-int8_t Z_DIR = 1;             // 1 if mpu is upright, -1 if upside down
+#endif
+int8_t Z_DIR = 1;                     // 1 if mpu is upright, -1 if upside down
 
 int16_t ax, ay, az;
 int16_t gx, gy, gz;
 float _ax, _ay, _az;
+#ifdef MPU_VERBOSE
 float _gx, _gy, _gz;
+#endif
 
-const uint8_t INTERRUPT_PIN = 2;          // Use Pin 2 as Interrupt 0, only 2 or 3 can be interrupt
+const uint8_t INTERRUPT_PIN = 2;      // Use Pin 2 as Interrupt 0, only 2 or 3 can be interrupt
 volatile bool mpuInterrupt = false;   // Indicates whether MPU interrupt pin has gone high
+void dmpDataReady() { mpuInterrupt = true; }
 
-unsigned long lastPrintTime = 0;
-unsigned long lastSetSpeedTime = 0;
-unsigned long lastCmdTime = 0;
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Movement and UART
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
 
 // 1 = forward, 2 = backward, 3 = left, 4 = right
 uint8_t move_dir = 0;
@@ -56,37 +82,48 @@ uint8_t move_time = 0;
 int8_t bias_sgn_L = 0;
 int8_t bias_sgn_R = 0;
 
+unsigned long lastCmdTime = 0;
+
 // max number of char is 10 in a message
 const uint8_t numChars = 10;
 char receivedChars[numChars];
 bool newData = false;
 
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Proportional Control (Balance Loop)
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-//-----------------------------------------------------------------------------------------------
-//Proportional
-const uint8_t error_q_size = 5;
-int16_t error_q_x[error_q_size] = {0, 0, 0, 0, 0};
-int16_t error_q_y[error_q_size] = {0, 0, 0, 0, 0};
-int16_t error_q_z[error_q_size] = {0, 0, 0, 0, 0};
-uint8_t error_q_ctr = 0;
-float K_a = 0.05;
-float K_p = 0.5 * 0.2 * 2;
+const uint8_t bal_err_q_size = 5;
+#ifdef MPU_VERBOSE
+int16_t bal_err_q_x[bal_err_q_size] = {0, 0, 0, 0, 0};
+#endif
+int16_t bal_err_q_y[bal_err_q_size] = {0, 0, 0, 0, 0};
+int16_t bal_err_q_z[bal_err_q_size] = {0, 0, 0, 0, 0};
+uint8_t bal_err_q_ctr = 0;
+float bal_K_a = 0.05;
+float bal_K_p = 0.5 * 0.2 * 3.5;
 
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Derivative Control (Balance Loop)
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-//-----------------------------------------------------------------------------------------------
-//Derivative
-const uint8_t avg_q_size = 5;
-int16_t avg_error_q[avg_q_size] = {0, 0, 0, 0, 0};
-uint8_t delta_time_q[avg_q_size] = {0, 0, 0, 0, 0};
-uint8_t avg_q_ctr = 0;
+const uint8_t bal_avg_q_size = 5;
+int16_t bal_avg_err_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
+uint8_t delta_time_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
+uint8_t bal_avg_q_ctr = 0;
 unsigned long last_delta_time = 0;
-float K_d = 0.3 * 0.2 * 0;
+float bal_K_d = 0.3 * 0.2 * 1.0;
+
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Proportional Control (Speed Loop)
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
 
-void dmpDataReady() {
-  mpuInterrupt = true;
-}
+
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Setup
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
 
@@ -119,213 +156,262 @@ void setup() {
     while (1); // Halt program if connection fails
   }
 
+  // Initialize the AccelStepper
   stepperR.setPinsInverted(false, false, true);
   stepperR.setEnablePin(7);
   stepperR.enableOutputs();
   stepperR.setMinPulseWidth(50);
-  stepperR.setMaxSpeed(100000);
+  stepperR.setMaxSpeed(3000);
+  stepperR.setCurrentPosition(0);
 
   stepperL.setPinsInverted(false, false, true);
   stepperL.setEnablePin(12);
   stepperL.enableOutputs();
   stepperL.setMinPulseWidth(50);
-  stepperL.setMaxSpeed(100000);
+  stepperL.setMaxSpeed(3000);
+  stepperR.setCurrentPosition(0);
 
+  // Set the interrupt pin of the MPU6050
   pinMode(INTERRUPT_PIN, INPUT);
   // Enable Data Ready interrupt on the MPU6050
   mpu.setIntDataReadyEnabled(true);
   // Attach the Arduino interrupt to Pin 2, looking for a RISING edge
   attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), dmpDataReady, RISING);
 
+  // MPU6050 calibration
   MPU_calibration();
 
+  // Initialize the last delta time for derivative control
   last_delta_time = millis();
 }
+
+
+
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Main Loop
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+
 
 
 void loop() {
 
   if (mpuInterrupt) {
+    float net_speed_L = 0;
+    float net_speed_R = 0;
     mpuInterrupt = false;
-
-
-    stepperR.runSpeed();
-    stepperL.runSpeed();
-
-
+    runSpeed();
+    
     // IMPORTANT: This clears the hardware interrupt pin on the MPU6050!
     // Without this, the physical pin stays HIGH and never triggers another RISING edge.
     uint8_t mpuIntStatus = mpu.getIntStatus();
+    runSpeed();
 
-    stepperR.runSpeed();
-    stepperL.runSpeed();
+    //---------------------------------------------------------------------------------------------------------------------------------------------------------
+    // MPU6050 measurements
+    //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
     // Read raw accelerometer and gyroscope measurements
     mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-
-    stepperR.runSpeed();
-    stepperL.runSpeed();
+    runSpeed();
 
     uint8_t delta_time = min(millis() - last_delta_time, 200);
     last_delta_time = millis();
-
-    stepperR.runSpeed();
-    stepperL.runSpeed();
+    runSpeed();
 
     // unit in m/s^2
     _ax = (ax+OFFSET_AX) * ACCEL_FACTOR;
     _ay = (ay+OFFSET_AY) * ACCEL_FACTOR;
     _az = (az+OFFSET_AZ) * ACCEL_FACTOR;
-    
+    #ifdef MPU_VERBOSE
     // CCW->+ive, CW->-ive, unit in degree per second
     _gx = (gx+OFFSET_GX) * ROT_FACTOR;
     _gy = (gy+OFFSET_GY) * ROT_FACTOR;
     _gz = (gz+OFFSET_GZ) * ROT_FACTOR;
+    #endif
+    runSpeed();
 
-    stepperR.runSpeed();
-    stepperL.runSpeed();
+    #ifdef MPU_VERBOSE
+    bal_err_q_x[bal_err_q_ctr] = (ax + OFFSET_AX);
+    #endif
+    bal_err_q_y[bal_err_q_ctr] = (ay + OFFSET_AY);
+    bal_err_q_z[bal_err_q_ctr] = (az + OFFSET_AZ) - 16384 * Z_DIR;
+    (bal_err_q_ctr >= bal_err_q_size - 1) ? bal_err_q_ctr = 0 : bal_err_q_ctr++;
+    runSpeed();
 
-    error_q_x[error_q_ctr] = (ax + OFFSET_AX);
-    error_q_y[error_q_ctr] = (ay + OFFSET_AY);
-    error_q_z[error_q_ctr] = (az + OFFSET_AZ) - 16384 * Z_DIR;
-    (error_q_ctr >= error_q_size - 1) ? error_q_ctr = 0 : error_q_ctr++;
-
-    stepperR.runSpeed();
-    stepperL.runSpeed();
-
-    // proportional control
-    int32_t sum = 0;
     {
-      int16_t *ptr = error_q_y;
-      int16_t *end = error_q_y + error_q_size;
-      while (ptr < end) sum += *ptr++;
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
+      // Proportional Control (Balance Loop)
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+      int32_t sum = 0;
+      {
+        int16_t *ptr = bal_err_q_y;
+        int16_t *end = bal_err_q_y + bal_err_q_size;
+        while (ptr < end) sum += *ptr++;
+        runSpeed();
+      }
+      // +ive = CCW->speed +ive, -ive = CW->speed -ive
+      int32_t avg_error = sum / bal_err_q_size;
+      int32_t _p = avg_error * bal_K_p;
+      if(_p < 300 * bal_K_p && _p > -300 * bal_K_p) _p = 0;
+      runSpeed();
+
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
+      // Acceleration Control (Commented Out)
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
+      
+      // // acceleration term
+      // sum = 0;
+      // {
+      //   int16_t *ptr = bal_err_q_z;
+      //   int16_t *end = bal_err_q_z + bal_err_q_size;
+      //   while (ptr < end) sum += *ptr++;
+      //   runSpeed();
+      // }
+      // // +ive = downward_accel, -ive = upward_accel
+      // int16_t avg_error_z = sum / bal_err_q_size;
+      // int16_t _a = avg_error_z * bal_K_a;
+      // if(_a < 400 * bal_K_a && _a > -400 * bal_K_a) _a = 0;
+      // runSpeed();
+
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
+      // Derivative Control (Balance Loop)
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+      bal_avg_err_q[bal_avg_q_ctr] = avg_error;
+      delta_time_q[bal_avg_q_ctr] = delta_time;
+      (bal_avg_q_ctr >= bal_avg_q_size - 1) ? bal_avg_q_ctr = 0 : bal_avg_q_ctr++;
+      runSpeed();
+
+      uint8_t last_error_index = (bal_avg_q_ctr + 1) % bal_avg_q_size;
+      // +ive = moving CCW, -ive = moving CW
+      int16_t delta_error = avg_error - bal_avg_err_q[last_error_index];
+      uint8_t elapsed_time = 0;
+      runSpeed();
+    
+      {
+        uint8_t *ptr = delta_time_q;
+        uint8_t *end = delta_time_q + bal_avg_q_size;
+        while (ptr < end) elapsed_time += *ptr++;
+        elapsed_time -= delta_time_q[last_error_index];
+        runSpeed();
+      }
+
+      int16_t _d = fast_round(delta_error * bal_K_d / elapsed_time);
+      if(_d < 2 && _d > -2) _d = 0;
+      runSpeed();
+
+
+
+      net_speed_L += _p - sgn(_p) * abs(_d);
+      net_speed_R += _p - sgn(_p) * abs(_d);
     }
 
-    stepperR.runSpeed();
-    stepperL.runSpeed();
 
-    // +ive = CCW->speed +ive, -ive = CW->speed -ive
-    int32_t avg_error = sum / error_q_size;
-    int32_t _p = avg_error * K_p;
-    if(_p < 300 * K_p && _p > -300 * K_p) _p = 0;
 
-    // acceleration term
-    // sum = 0;
-    // {
-    //   int16_t *ptr = error_q_z;
-    //   int16_t *end = error_q_z + error_q_size;
-    //   while (ptr < end) sum += *ptr++;
-    // }
-    // // +ive = downward_accel, -ive = upward_accel
-    // int16_t avg_error_z = sum / error_q_size;
-    // int16_t _a = avg_error_z * K_a;
-    // if(_a < 400 * K_a && _a > -400 * K_a) _a = 0;
-
-    stepperR.runSpeed();
-    stepperL.runSpeed();
-
-    // derivative control
-    avg_error_q[avg_q_ctr] = avg_error;
-    delta_time_q[avg_q_ctr] = delta_time;
-    (avg_q_ctr >= avg_q_size - 1) ? avg_q_ctr = 0 : avg_q_ctr++;
-
-    stepperR.runSpeed();
-    stepperL.runSpeed();
-
-    uint8_t last_error_index = (avg_q_ctr + 1) % avg_q_size;
-    // +ive = moving CCW, -ive = moving CW
-    int16_t delta_error = avg_error - avg_error_q[last_error_index];
-    uint8_t elapsed_time = 0;
-
-    stepperR.runSpeed();
-    stepperL.runSpeed();
-  
     {
-      uint8_t *ptr = delta_time_q;
-      uint8_t *end = delta_time_q + avg_q_size;
-      while (ptr < end) elapsed_time += *ptr++;
-      elapsed_time -= delta_time_q[last_error_index];
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
+      // Proportional Control (Speed Loop)
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+
+
+
     }
 
-    stepperR.runSpeed();
-    stepperL.runSpeed();
 
-    int16_t _d = fast_round(delta_error * K_d / elapsed_time);
-    if(_d < 2 && _d > -2) _d = 0;
 
-    stepperR.runSpeed();
-    stepperL.runSpeed();
 
-    if(millis() - lastSetSpeedTime >= 10){
+    
+
+    //---------------------------------------------------------------------------------------------------------------------------------------------------------
+    // Set Motor Speeds
+    //---------------------------------------------------------------------------------------------------------------------------------------------------------
+    
+    net_speed_L += bias_sgn_L * move_bias;
+    net_speed_R += bias_sgn_R * move_bias;
+
+    if(millis() - lastSetSpeedTime >= 15){
       lastSetSpeedTime = millis();
-      stepperR.setSpeed(_p - sgn(_p) * abs(_d) + bias_sgn_R * move_bias);
-      stepperL.setSpeed(_p - sgn(_p) * abs(_d) + bias_sgn_L * move_bias);
+      stepperL.setSpeed(net_speed_L);
+      stepperR.setSpeed(net_speed_R);
     }
+    runSpeed();
 
-    stepperR.runSpeed();
-    stepperL.runSpeed();
 
-    // if(millis() - lastPrintTime >= 500){
-    //   lastPrintTime = millis();
-    //   //Print the values to the Serial Monitor
-    //   Serial.print("a/g:\t");
-    //   Serial.print(_ax); Serial.print("\t");
-    //   Serial.print(_ay); Serial.print("\t");
-    //   Serial.print(_az); Serial.print("\t");
-    //   Serial.print(_gx); Serial.print("\t");
-    //   Serial.print(_gy); Serial.print("\t");
-    //   Serial.println(_gz);
-    //   Serial.print(_p);
-    //   Serial.print(" ||| ");
-    //   Serial.print(_d);
-    //   Serial.print(" ||| ");
-    // //   Serial.print(_a);
-    // //   Serial.print(" ||| ");
-    //   Serial.print(bias_sgn_R * move_bias);
-    //   Serial.print(" ||| ");
-    //   Serial.print(bias_sgn_L * move_bias);
-    //   Serial.print(" ||| ");
-    //   Serial.print(_p - sgn(_p) * abs(_d) + bias_sgn_R * move_bias);
-    //   Serial.print(" ||| ");
-    //   Serial.print(_p - sgn(_p) * abs(_d) + bias_sgn_L * move_bias);
-    //   Serial.print(" ||| ");
-    //   Serial.print(stepperL.speed());
-    //   Serial.print(" ||| ");
-    //   Serial.println(stepperR.speed());
-    // }
+    #ifdef DEBUG
+    if(millis() - lastPrintTime >= 500){
+      lastPrintTime = millis();
+      //Print the values to the Serial Monitor
+      Serial.print("a:\t");
+      Serial.print(_ax); Serial.print("\t");
+      Serial.print(_ay); Serial.print("\t");
+      Serial.println(_az);
+      #ifdef MPU_VERBOSE
+      Serial.print("g:\t");
+      Serial.print(_gx); Serial.print("\t");
+      Serial.print(_gy); Serial.print("\t");
+      Serial.println(_gz);
+      #endif
+      Serial.print(_p);
+      Serial.print(" ||| ");
+      Serial.print(_d);
+      Serial.print(" ||| ");
+      // Serial.print(_a);
+      // Serial.print(" ||| ");
+      Serial.print(bias_sgn_R * move_bias);
+      Serial.print(" ||| ");
+      Serial.print(bias_sgn_L * move_bias);
+      Serial.print(" ||| ");
+      Serial.print(_p - sgn(_p) * abs(_d) + bias_sgn_R * move_bias);
+      Serial.print(" ||| ");
+      Serial.print(_p - sgn(_p) * abs(_d) + bias_sgn_L * move_bias);
+      Serial.print(" ||| ");
+      Serial.print(stepperL.speed());
+      Serial.print(" ||| ");
+      Serial.println(stepperR.speed());
+    }
+    #endif
   }
 
-  stepperR.runSpeed();
-  stepperL.runSpeed();
+  //---------------------------------------------------------------------------------------------------------------------------------------------------------
+  // UART
+  //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
   receiveData();
-
-  stepperR.runSpeed();
-  stepperL.runSpeed();
+  runSpeed();
 
   if (newData == true) {
     altSerial.println(receivedChars);
-
-    stepperR.runSpeed();
-    stepperL.runSpeed();
+    runSpeed();
 
     update_cmd();
-    // Serial.print("Pico message: ");
-    // Serial.println(receivedChars);
-    // Serial.print(move_dir);
-    // Serial.print(" // ");
-    // Serial.print(move_bias);
-    // Serial.print(" // ");
-    // Serial.print(move_time);
-    // Serial.print(" // ");
-    // Serial.print(bias_sgn_L);
-    // Serial.print(" // ");
-    // Serial.println(bias_sgn_R);
+    runSpeed();
+
+    #ifdef DEBUG
+    Serial.print("Pico message: ");
+    Serial.println(receivedChars);
+    Serial.print(move_dir);
+    Serial.print(" // ");
+    Serial.print(move_bias);
+    Serial.print(" // ");
+    Serial.print(move_time);
+    Serial.print(" // ");
+    Serial.print(bias_sgn_L);
+    Serial.print(" // ");
+    Serial.println(bias_sgn_R);
+    #endif
+
     newData = false;
   }
+  runSpeed();
 
-  stepperR.runSpeed();
-  stepperL.runSpeed();
+  //---------------------------------------------------------------------------------------------------------------------------------------------------------
+  // Movement Timer
+  //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
   if (move_dir != 0 && (millis() - lastCmdTime) / 1000.0 > move_time) {
     move_dir = 0;
@@ -334,17 +420,23 @@ void loop() {
     bias_sgn_L = 0;
     bias_sgn_R = 0;
   }
-
-  stepperR.runSpeed();
-  stepperL.runSpeed();
+  runSpeed();
   
 }
 
 
 
+void runSpeed(){
+  stepperR.runSpeed();
+  stepperL.runSpeed();
+}
+
 
 
 void update_cmd(){
+  bool set_Kp = false;
+  bool set_Kd = false;
+
   if(!receivedChars ||
      receivedChars[0] == '\0' || receivedChars[1] == '\0' ||
      receivedChars[2] == '\0' || receivedChars[1] != ':'){
@@ -355,6 +447,7 @@ void update_cmd(){
      bias_sgn_R = 0;
      return;
   }
+  runSpeed();
 
   switch(receivedChars[0]){
     case 'b':
@@ -369,6 +462,12 @@ void update_cmd(){
     case 'f':
       move_dir = 4;
       break;
+    case 'p':
+      set_Kp = true;
+      break;
+    case 'd':
+      set_Kd = true;
+      break;
     default:
       move_dir = 0;
       move_bias = 0;
@@ -377,27 +476,35 @@ void update_cmd(){
       bias_sgn_R = 0;
       return;
   }
+  runSpeed();
 
   char* numStr = &receivedChars[2];
   char* endPtr = NULL;
-  move_time = static_cast<uint8_t>(strtol(numStr, &endPtr, 10));
-  if(endPtr && *endPtr != '\0'){
-    move_dir = 0;
-    move_bias = 0;
-    move_time = 0;
-    bias_sgn_L = 0;
-    bias_sgn_R = 0;
-    return;
+
+  if(set_Kp){
+    bal_K_p = static_cast<uint8_t>(strtol(numStr, &endPtr, 10)) / 100.0;
   }
+  else if(set_Kd){
+    bal_K_d = static_cast<uint8_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+  }
+  else{
+    move_time = static_cast<uint8_t>(strtol(numStr, &endPtr, 10));
+    if(endPtr && *endPtr != '\0'){
+        move_dir = 0;
+        move_bias = 0;
+        move_time = 0;
+        bias_sgn_L = 0;
+        bias_sgn_R = 0;
+        return;
+    }
 
-  move_bias = 200;
-  bias_sgn_L = (int8_t)((move_dir - 1) / 2) * 2 - 1;
-  bias_sgn_R = (int8_t)((move_dir - 1) % 2) * 2 - 1;
-  lastCmdTime = millis();
+    move_bias = 200;
+    bias_sgn_L = (int8_t)((move_dir - 1) / 2) * 2 - 1;
+    bias_sgn_R = (int8_t)((move_dir - 1) % 2) * 2 - 1;
+    lastCmdTime = millis();
+  }
+  runSpeed();
 }
-
-
-
 
 
 
@@ -405,10 +512,12 @@ void receiveData() {
   static uint8_t index = 0;
   char endMarker = '\n';
   char rc;
+  runSpeed();
 
   // AltSoftSerial handles timing in the background via hardware timers
   while (altSerial.available() > 0 && newData == false) {
     rc = altSerial.read();
+    runSpeed();
 
     if (rc != endMarker) {
       receivedChars[index] = rc;
@@ -425,7 +534,6 @@ void receiveData() {
 
 
 
-
 void MPU_calibration(){
   const uint16_t samples = 100;
   const uint16_t totalWindowMs = 2000;
@@ -434,9 +542,11 @@ void MPU_calibration(){
   int32_t sum_ax = 0;
   int32_t sum_ay = 0;
   int32_t sum_az = 0;
+  #ifdef MPU_VERBOSE
   int32_t sum_gx = 0;
   int32_t sum_gy = 0;
   int32_t sum_gz = 0;
+  #endif
 
   Serial.println("\nStarting MPU calibration: keep sensor still and level...");
   delay(500);
@@ -448,9 +558,11 @@ void MPU_calibration(){
     sum_ax += ax;
     sum_ay += ay;
     sum_az += az;
+    #ifdef MPU_VERBOSE
     sum_gx += gx;
     sum_gy += gy;
     sum_gz += gz;
+    #endif
 
     nextSampleAt += samplePeriodMs;
     while ((long)(nextSampleAt - millis()) > 0) {
@@ -461,22 +573,28 @@ void MPU_calibration(){
   int16_t avg_ax = (int16_t)(sum_ax / samples);
   int16_t avg_ay = (int16_t)(sum_ay / samples);
   int16_t avg_az = (int16_t)(sum_az / samples);
+  #ifdef MPU_VERBOSE
   int16_t avg_gx = (int16_t)(sum_gx / samples);
   int16_t avg_gy = (int16_t)(sum_gy / samples);
   int16_t avg_gz = (int16_t)(sum_gz / samples);
+  #endif
 
   OFFSET_AX = -avg_ax;
   OFFSET_AY = -avg_ay;
   OFFSET_AZ = -avg_az + 16384 * Z_DIR;
+  #ifdef MPU_VERBOSE
   OFFSET_GX = -avg_gx;
   OFFSET_GY = -avg_gy;
   OFFSET_GZ = -avg_gz;
+  #endif
 
   Serial.println("MPU calibration complete. Offsets:");
   Serial.print("AX: "); Serial.print(OFFSET_AX); Serial.print("\t");
   Serial.print("AY: "); Serial.print(OFFSET_AY); Serial.print("\t");
   Serial.print("AZ: "); Serial.print(OFFSET_AZ); Serial.print("\t");
+  #ifdef MPU_VERBOSE
   Serial.print("GX: "); Serial.print(OFFSET_GX); Serial.print("\t");
   Serial.print("GY: "); Serial.print(OFFSET_GY); Serial.print("\t");
   Serial.print("GZ: "); Serial.println(OFFSET_GZ);
+  #endif
 }
