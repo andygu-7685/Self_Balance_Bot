@@ -101,7 +101,7 @@ int16_t bal_err_q_y[bal_err_q_size] = {0, 0, 0, 0, 0};
 int16_t bal_err_q_z[bal_err_q_size] = {0, 0, 0, 0, 0};
 uint8_t bal_err_q_ctr = 0;
 float bal_K_a = 0.05;
-float bal_K_p = 0.5 * 0.2 * 3.5;
+float bal_K_p = 0.25;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Derivative Control (Balance Loop)
@@ -112,7 +112,7 @@ int16_t bal_avg_err_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
 uint8_t bal_dt_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
 uint8_t bal_avg_q_ctr = 0;
 unsigned long bal_last_time = 0;
-float bal_K_d = 0.3 * 0.2 * 1.0;
+float bal_K_d = 0.06;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Proportional Control (Speed Loop)
@@ -124,14 +124,14 @@ int16_t spd_correction_R = 0;
 
 int16_t spd_last_pos_L = 0;
 int16_t spd_last_pos_R = 0;
-float spd_K_p = 0;
+float spd_K_p = 0.40;
 unsigned long spd_last_time = 0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Integral Control (Speed Loop)
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-float spd_K_i = 0;
+float spd_K_i = 0.80;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Setup
@@ -173,14 +173,14 @@ void setup() {
   stepperR.setEnablePin(7);
   stepperR.enableOutputs();
   stepperR.setMinPulseWidth(50);
-  stepperR.setMaxSpeed(3000);
+  stepperR.setMaxSpeed(10000);
   stepperR.setCurrentPosition(0);
 
   stepperL.setPinsInverted(false, false, true);
   stepperL.setEnablePin(12);
   stepperL.enableOutputs();
   stepperL.setMinPulseWidth(50);
-  stepperL.setMaxSpeed(3000);
+  stepperL.setMaxSpeed(10000);
   stepperR.setCurrentPosition(0);
 
   // Set the interrupt pin of the MPU6050
@@ -326,7 +326,7 @@ void loop() {
 
 
     curr_time = millis();
-    if(curr_time - spd_last_time >= 80){
+    if(curr_time - spd_last_time >= 200){
 
       int16_t curr_pos_L = stepperL.currentPosition();
       int16_t curr_pos_R = stepperR.currentPosition();
@@ -522,19 +522,19 @@ void update_cmd(){
 
   switch(set_K){
     case 1:
-      bal_K_p = static_cast<uint8_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      bal_K_p = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
       break;
     case 2:
-      bal_K_d = static_cast<uint8_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      bal_K_d = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
       break;
     case 3:
-      spd_K_p = static_cast<uint8_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      spd_K_p = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
       break;
     case 4:
-      spd_K_i = static_cast<uint8_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      spd_K_i = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
       break;
     default:
-      move_time = static_cast<uint8_t>(strtol(numStr, &endPtr, 10));
+      move_time = static_cast<int8_t>(strtol(numStr, &endPtr, 10));
       if(endPtr && *endPtr != '\0'){
           move_dir = 0;
           move_bias = 0;
