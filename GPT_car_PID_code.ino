@@ -19,7 +19,6 @@
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
 #define sgn(x) ((x) > 0 ? 1 : ((x) < 0 ? -1 : 0))
-// #define MPU_VERBOSE
 // #define DEBUG
 
 inline int fast_round(float x) {
@@ -36,7 +35,11 @@ AccelStepper stepperL(AccelStepper::DRIVER, 11, 10);
 // Pins are fixed: RX=8, TX=9
 AltSoftSerial altSerial;
 
-unsigned long lastPrintTime = 0;
+#ifdef DEBUG
+unsigned long lastPrintTime1 = 0;
+unsigned long lastPrintTime2 = 0;
+unsigned long lastPrintTime3 = 0;
+#endif
 unsigned long lastSetSpeedTime = 0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -48,19 +51,15 @@ const float ROT_FACTOR = 1.0 / 131.0;
 int16_t OFFSET_AX = 0;
 int16_t OFFSET_AY = 0;
 int16_t OFFSET_AZ = 0;
-#ifdef MPU_VERBOSE
 int16_t OFFSET_GX = 0;
 int16_t OFFSET_GY = 0;
 int16_t OFFSET_GZ = 0;
-#endif
 int8_t Z_DIR = 1;                     // 1 if mpu is upright, -1 if upside down
 
 int16_t ax, ay, az;
 int16_t gx, gy, gz;
 float _ax, _ay, _az;
-#ifdef MPU_VERBOSE
 float _gx, _gy, _gz;
-#endif
 
 const uint8_t INTERRUPT_PIN = 2;      // Use Pin 2 as Interrupt 0, only 2 or 3 can be interrupt
 volatile bool mpuInterrupt = false;   // Indicates whether MPU interrupt pin has gone high
@@ -93,15 +92,14 @@ bool newData = false;
 // Proportional Control (Balance Loop)
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-const uint8_t bal_err_q_size = 5;
-#ifdef MPU_VERBOSE
-int16_t bal_err_q_x[bal_err_q_size] = {0, 0, 0, 0, 0};
-#endif
-int16_t bal_err_q_y[bal_err_q_size] = {0, 0, 0, 0, 0};
-int16_t bal_err_q_z[bal_err_q_size] = {0, 0, 0, 0, 0};
-uint8_t bal_err_q_ctr = 0;
-float bal_K_a = 0.05;
-float bal_K_p = 0.25;
+// angle of tilt in degree * 100
+int16_t angle = 0;
+const uint8_t bal_q_size = 5;
+int16_t bal_acc_q_y[bal_q_size] = {0, 0, 0, 0, 0};
+int16_t bal_acc_q_z[bal_q_size] = {0, 0, 0, 0, 0};
+int16_t bal_gyr_q_x[bal_q_size] = {0, 0, 0, 0, 0};
+uint8_t bal_q_ctr = 0;
+float bal_K_p = 2.0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Derivative Control (Balance Loop)
@@ -112,7 +110,7 @@ int16_t bal_avg_err_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
 uint8_t bal_dt_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
 uint8_t bal_avg_q_ctr = 0;
 unsigned long bal_last_time = 0;
-float bal_K_d = 0.06;
+float bal_K_d = 15.0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Proportional Control (Speed Loop)
@@ -124,14 +122,14 @@ int16_t spd_correction_R = 0;
 
 int16_t spd_last_pos_L = 0;
 int16_t spd_last_pos_R = 0;
-float spd_K_p = 0.40;
+float spd_K_p = 180.0;
 unsigned long spd_last_time = 0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Integral Control (Speed Loop)
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-float spd_K_i = 0.80;
+float spd_K_i = 0.5;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Setup
@@ -181,7 +179,7 @@ void setup() {
   stepperL.enableOutputs();
   stepperL.setMinPulseWidth(50);
   stepperL.setMaxSpeed(10000);
-  stepperR.setCurrentPosition(0);
+  stepperL.setCurrentPosition(0);
 
   // Set the interrupt pin of the MPU6050
   pinMode(INTERRUPT_PIN, INPUT);
@@ -231,26 +229,20 @@ void loop() {
 
     uint8_t bal_delta_time = min(curr_time - bal_last_time, 200);
     bal_last_time = curr_time;
-    runSpeed();
 
     // unit in m/s^2
     _ax = (ax+OFFSET_AX) * ACCEL_FACTOR;
     _ay = (ay+OFFSET_AY) * ACCEL_FACTOR;
     _az = (az+OFFSET_AZ) * ACCEL_FACTOR;
-    #ifdef MPU_VERBOSE
     // CCW->+ive, CW->-ive, unit in degree per second
     _gx = (gx+OFFSET_GX) * ROT_FACTOR;
     _gy = (gy+OFFSET_GY) * ROT_FACTOR;
     _gz = (gz+OFFSET_GZ) * ROT_FACTOR;
-    #endif
-    runSpeed();
 
-    #ifdef MPU_VERBOSE
-    bal_err_q_x[bal_err_q_ctr] = (ax + OFFSET_AX);
-    #endif
-    bal_err_q_y[bal_err_q_ctr] = (ay + OFFSET_AY);
-    bal_err_q_z[bal_err_q_ctr] = (az + OFFSET_AZ) - 16384 * Z_DIR;
-    (bal_err_q_ctr >= bal_err_q_size - 1) ? bal_err_q_ctr = 0 : bal_err_q_ctr++;
+    bal_acc_q_y[bal_q_ctr] = (ay + OFFSET_AY);
+    bal_acc_q_z[bal_q_ctr] = (az + OFFSET_AZ);
+    bal_gyr_q_x[bal_q_ctr] = (gx + OFFSET_GX);
+    (bal_q_ctr >= bal_q_size - 1) ? bal_q_ctr = 0 : bal_q_ctr++;
     runSpeed();
 
 
@@ -262,47 +254,53 @@ void loop() {
 
       int32_t sum = 0;
       {
-        int16_t *ptr = bal_err_q_y;
-        int16_t *end = bal_err_q_y + bal_err_q_size;
-        while (ptr < end) sum += *ptr++;
+        int16_t *ptr_a = bal_acc_q_y;
+        int16_t *end_a = bal_acc_q_y + bal_q_size;
+        while (ptr_a < end_a) sum += *ptr_a++;
         runSpeed();
       }
       // +ive = CCW->speed +ive, -ive = CW->speed -ive
-      float avg_error = (float)(sum / bal_err_q_size);
-      int32_t _p = fast_round(avg_error * bal_K_p);
-      if(_p < 300 * bal_K_p && _p > -300 * bal_K_p) _p = 0;
-      runSpeed();
+      int16_t avg_acc_y = sum / bal_q_size;
 
-      //---------------------------------------------------------------------------------------------------------------------------------------------------------
-      // Acceleration Control (Commented Out)
-      //---------------------------------------------------------------------------------------------------------------------------------------------------------
-      
-      // // acceleration term
-      // sum = 0;
-      // {
-      //   int16_t *ptr = bal_err_q_z;
-      //   int16_t *end = bal_err_q_z + bal_err_q_size;
-      //   while (ptr < end) sum += *ptr++;
-      //   runSpeed();
-      // }
-      // // +ive = downward_accel, -ive = upward_accel
-      // int16_t avg_error_z = sum / bal_err_q_size;
-      // int16_t _a = avg_error_z * bal_K_a;
-      // if(_a < 400 * bal_K_a && _a > -400 * bal_K_a) _a = 0;
-      // runSpeed();
+      // acceleration term
+      sum = 0;
+      {
+        int16_t *ptr = bal_acc_q_z;
+        int16_t *end = bal_acc_q_z + bal_q_size;
+        while (ptr < end) sum += *ptr++;
+        runSpeed();
+      }
+      // +ive = downward_accel, -ive = upward_accel
+      int16_t avg_acc_z = sum / bal_q_size;
+
+      sum = 0;
+      {
+        int16_t *ptr_g = bal_gyr_q_x;
+        int16_t *end_g = bal_gyr_q_x + bal_q_size;
+        while (ptr_g < end_g) sum += *ptr_g++;
+        runSpeed();
+      }
+      // +ive = CCW, -ive = CW rot spd in degree per s
+      float avg_rot_x = (sum / bal_q_size) * ROT_FACTOR;
+
+      // +ive = CCW, -ive = CW in degree
+      float angle_a = atan2(avg_acc_y, avg_acc_z) * 180 / PI;
+      angle = 0.98 * (angle + avg_rot_x * bal_delta_time / 10.0) + 0.02 * angle_a * 100.0;
+      int16_t _p = fast_round(angle * bal_K_p);
+      if(_p < 30 * bal_K_p && _p > -30 * bal_K_p) _p = 0;
+      runSpeed();
 
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
       // Derivative Control (Balance Loop)
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-      bal_avg_err_q[bal_avg_q_ctr] = avg_error;
+      bal_avg_err_q[bal_avg_q_ctr] = angle;
       bal_dt_q[bal_avg_q_ctr] = bal_delta_time;
       (bal_avg_q_ctr >= bal_avg_q_size - 1) ? bal_avg_q_ctr = 0 : bal_avg_q_ctr++;
-      runSpeed();
 
       uint8_t last_error_index = (bal_avg_q_ctr + 1) % bal_avg_q_size;
       // +ive = moving CCW, -ive = moving CW
-      int16_t delta_error = avg_error - bal_avg_err_q[last_error_index];
+      int16_t delta_error = angle - bal_avg_err_q[last_error_index];
       uint8_t elapsed_time = 0;
       runSpeed();
       
@@ -316,17 +314,36 @@ void loop() {
 
       int16_t _d = fast_round(delta_error * bal_K_d / elapsed_time);
       if(_d < 2 && _d > -2) _d = 0;
-      runSpeed();
 
       net_speed_L += _p - sgn(_p) * abs(_d);
       net_speed_R += _p - sgn(_p) * abs(_d);
       runSpeed();
+
+      #ifdef DEBUG
+      if(curr_time - lastPrintTime1 >= 500){
+        lastPrintTime1 = curr_time;
+        Serial.print("balance: \t");
+        Serial.print(_p);
+        Serial.print(" ||| ");
+        Serial.print(_d);
+        Serial.print(" ||| ");
+        Serial.print(avg_acc_y);
+        Serial.print(" ||| ");
+        Serial.print(avg_acc_z);
+        Serial.print(" ||| ");
+        Serial.print(angle);
+        Serial.print(" ||| ");
+        Serial.print(net_speed_L);
+        Serial.print(" ||| ");
+        Serial.println(net_speed_R);
+      }
+      #endif
     }
 
 
 
     curr_time = millis();
-    if(curr_time - spd_last_time >= 200){
+    if(curr_time - spd_last_time >= 100){
 
       int16_t curr_pos_L = stepperL.currentPosition();
       int16_t curr_pos_R = stepperR.currentPosition();
@@ -337,7 +354,7 @@ void loop() {
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
       int16_t delta_pos_L = curr_pos_L - spd_last_pos_L;
       int16_t delta_pos_R = curr_pos_R - spd_last_pos_R;
-      int16_t spd_delta_time = curr_time - spd_last_time;
+      float spd_delta_time = curr_time - spd_last_time;
       spd_last_pos_L = curr_pos_L;
       spd_last_pos_R = curr_pos_R;
       spd_last_time = curr_time;
@@ -357,6 +374,24 @@ void loop() {
 
       spd_correction_L = -_p_L - _i_L;
       spd_correction_R = -_p_R - _i_R;
+
+      #ifdef DEBUG
+      if(curr_time - lastPrintTime2 >= 500){
+        lastPrintTime2 = curr_time;
+        Serial.print("speed: \t");
+        Serial.print(_p_L);
+        Serial.print(" ||| ");
+        Serial.print(_p_R);
+        Serial.print(" ||| ");
+        Serial.print(_i_L);
+        Serial.print(" ||| ");
+        Serial.print(_i_R);
+        Serial.print(" ||| ");
+        Serial.print(spd_correction_L);
+        Serial.print(" ||| ");
+        Serial.println(spd_correction_R);
+      }
+      #endif
     }
 
 
@@ -368,40 +403,33 @@ void loop() {
     net_speed_L += spd_correction_L + bias_sgn_L * move_bias;
     net_speed_R += spd_correction_R + bias_sgn_R * move_bias;
 
-    if(millis() - lastSetSpeedTime >= 15){
-      lastSetSpeedTime = millis();
+    if(curr_time - lastSetSpeedTime >= 15){
+      lastSetSpeedTime = curr_time;
       stepperL.setSpeed(net_speed_L);
       stepperR.setSpeed(net_speed_R);
     }
     runSpeed();
 
     #ifdef DEBUG
-    if(millis() - lastPrintTime >= 500){
-      lastPrintTime = millis();
+    if(curr_time - lastPrintTime3 >= 500){
+      lastPrintTime3 = curr_time;
       //Print the values to the Serial Monitor
       Serial.print("a:\t");
       Serial.print(_ax); Serial.print("\t");
       Serial.print(_ay); Serial.print("\t");
       Serial.println(_az);
-      #ifdef MPU_VERBOSE
       Serial.print("g:\t");
       Serial.print(_gx); Serial.print("\t");
       Serial.print(_gy); Serial.print("\t");
       Serial.println(_gz);
-      #endif
-      Serial.print(_p);
-      Serial.print(" ||| ");
-      Serial.print(_d);
-      Serial.print(" ||| ");
-      // Serial.print(_a);
-      // Serial.print(" ||| ");
-      Serial.print(bias_sgn_R * move_bias);
-      Serial.print(" ||| ");
+      Serial.print("net_speed: \t");
       Serial.print(bias_sgn_L * move_bias);
       Serial.print(" ||| ");
-      Serial.print(_p - sgn(_p) * abs(_d) + bias_sgn_R * move_bias);
+      Serial.print(bias_sgn_R * move_bias);
       Serial.print(" ||| ");
-      Serial.print(_p - sgn(_p) * abs(_d) + bias_sgn_L * move_bias);
+      Serial.print(net_speed_L);
+      Serial.print(" ||| ");
+      Serial.print(net_speed_R);
       Serial.print(" ||| ");
       Serial.print(stepperL.speed());
       Serial.print(" ||| ");
@@ -440,7 +468,6 @@ void loop() {
 
     newData = false;
   }
-  runSpeed();
 
   //---------------------------------------------------------------------------------------------------------------------------------------------------------
   // Movement Timer
@@ -480,7 +507,6 @@ void update_cmd(){
      bias_sgn_R = 0;
      return;
   }
-  runSpeed();
 
   switch(receivedChars[0]){
     case 'b':
@@ -523,15 +549,23 @@ void update_cmd(){
   switch(set_K){
     case 1:
       bal_K_p = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      // Serial.print("bal_K_p: ");
+      // Serial.println(bal_K_p);
       break;
     case 2:
       bal_K_d = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      // Serial.print("bal_K_d: ");
+      // Serial.println(bal_K_d);
       break;
     case 3:
       spd_K_p = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      // Serial.print("spd_K_p: ");
+      // Serial.println(spd_K_p);
       break;
     case 4:
       spd_K_i = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      // Serial.print("spd_K_i: ");
+      // Serial.println(spd_K_i);
       break;
     default:
       move_time = static_cast<int8_t>(strtol(numStr, &endPtr, 10));
@@ -559,7 +593,6 @@ void receiveData() {
   static uint8_t index = 0;
   char endMarker = '\n';
   char rc;
-  runSpeed();
 
   // AltSoftSerial handles timing in the background via hardware timers
   while (altSerial.available() > 0 && newData == false) {
@@ -589,11 +622,9 @@ void MPU_calibration(){
   int32_t sum_ax = 0;
   int32_t sum_ay = 0;
   int32_t sum_az = 0;
-  #ifdef MPU_VERBOSE
   int32_t sum_gx = 0;
   int32_t sum_gy = 0;
   int32_t sum_gz = 0;
-  #endif
 
   Serial.println("\nStarting MPU calibration: keep sensor still and level...");
   delay(500);
@@ -605,11 +636,9 @@ void MPU_calibration(){
     sum_ax += ax;
     sum_ay += ay;
     sum_az += az;
-    #ifdef MPU_VERBOSE
     sum_gx += gx;
     sum_gy += gy;
     sum_gz += gz;
-    #endif
 
     nextSampleAt += samplePeriodMs;
     while ((long)(nextSampleAt - millis()) > 0) {
@@ -620,28 +649,22 @@ void MPU_calibration(){
   int16_t avg_ax = (int16_t)(sum_ax / samples);
   int16_t avg_ay = (int16_t)(sum_ay / samples);
   int16_t avg_az = (int16_t)(sum_az / samples);
-  #ifdef MPU_VERBOSE
   int16_t avg_gx = (int16_t)(sum_gx / samples);
   int16_t avg_gy = (int16_t)(sum_gy / samples);
   int16_t avg_gz = (int16_t)(sum_gz / samples);
-  #endif
 
   OFFSET_AX = -avg_ax;
   OFFSET_AY = -avg_ay;
   OFFSET_AZ = -avg_az + 16384 * Z_DIR;
-  #ifdef MPU_VERBOSE
   OFFSET_GX = -avg_gx;
   OFFSET_GY = -avg_gy;
   OFFSET_GZ = -avg_gz;
-  #endif
 
   Serial.println("MPU calibration complete. Offsets:");
   Serial.print("AX: "); Serial.print(OFFSET_AX); Serial.print("\t");
   Serial.print("AY: "); Serial.print(OFFSET_AY); Serial.print("\t");
   Serial.print("AZ: "); Serial.print(OFFSET_AZ); Serial.print("\t");
-  #ifdef MPU_VERBOSE
   Serial.print("GX: "); Serial.print(OFFSET_GX); Serial.print("\t");
   Serial.print("GY: "); Serial.print(OFFSET_GY); Serial.print("\t");
   Serial.print("GZ: "); Serial.println(OFFSET_GZ);
-  #endif
 }
