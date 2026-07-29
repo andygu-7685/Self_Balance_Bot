@@ -71,17 +71,6 @@ void dmpDataReady() { mpuInterrupt = true; }
 
 // 1 = forward, 2 = backward, 3 = left, 4 = right
 uint8_t move_dir = 0;
-// ~500 for some speed
-// must be signed or else the calculated speed would underflow
-// due to implicit conversion uint16_t + int16_t = uint16_t
-int16_t move_bias = 0;
-// move time in seconds
-uint8_t move_time = 0;
-// bias sign
-int8_t bias_sgn_L = 0;
-int8_t bias_sgn_R = 0;
-
-unsigned long lastCmdTime = 0;
 
 // max number of char is 10 in a message
 const uint8_t numChars = 10;
@@ -116,20 +105,16 @@ float bal_K_d = 15.0;
 // Proportional Control (Speed Loop)
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-// maintain speed correction that changes every 50-100ms
-int16_t spd_correction_L = 0;
-int16_t spd_correction_R = 0;
-
 int16_t spd_last_pos_L = 0;
 int16_t spd_last_pos_R = 0;
-float spd_K_p = 180.0;
+float spd_K_p = -276.8;
 unsigned long spd_last_time = 0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Integral Control (Speed Loop)
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-float spd_K_i = 0.5;
+float spd_K_i = 1.7;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Setup
@@ -285,9 +270,16 @@ void loop() {
 
       // +ive = CCW, -ive = CW in degree
       float angle_a = atan2(avg_acc_y, avg_acc_z) * 180 / PI;
-      angle = 0.98 * (angle + avg_rot_x * bal_delta_time / 10.0) + 0.02 * angle_a * 100.0;
-      int16_t _p = fast_round(angle * bal_K_p);
-      if(_p < 30 * bal_K_p && _p > -30 * bal_K_p) _p = 0;
+      uint16_t net_acc_mag = sqrt((int32_t)(avg_acc_y) * avg_acc_y + (int32_t)(avg_acc_z) * avg_acc_z);
+      runSpeed();
+
+      float acc_w = 1.0 / (50000.0 * ((net_acc_mag / 16384.0) - 1) * ((net_acc_mag / 16384.0) - 1) + 50.0);
+      int16_t pred_angle = (1.0 - acc_w) * (angle + avg_rot_x * bal_delta_time / 10.0) + acc_w * angle_a * 100.0;
+      if (abs(pred_angle - angle) < 1500) angle = pred_angle;
+      int16_t _p_L = fast_round(angle * bal_K_p);
+      int16_t _p_R = fast_round(angle * bal_K_p);
+      // if(_p_L < 10 * bal_K_p && _p_L > -10 * bal_K_p) _p_L = 0;
+      // if(_p_R < 10 * bal_K_p && _p_R > -10 * bal_K_p) _p_R = 0;
       runSpeed();
 
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -313,28 +305,30 @@ void loop() {
       }
 
       int16_t _d = fast_round(delta_error * bal_K_d / elapsed_time);
-      if(_d < 2 && _d > -2) _d = 0;
+      // if(_d < 2 && _d > -2) _d = 0;
 
-      net_speed_L += _p - sgn(_p) * abs(_d);
-      net_speed_R += _p - sgn(_p) * abs(_d);
+      net_speed_L += _p_L - sgn(_p_L) * abs(_d);
+      net_speed_R += _p_R - sgn(_p_R) * abs(_d);
       runSpeed();
 
       #ifdef DEBUG
       if(curr_time - lastPrintTime1 >= 500){
         lastPrintTime1 = curr_time;
-        Serial.print("balance: \t");
-        Serial.print(_p);
-        Serial.print(" ||| ");
+        Serial.print("balance: _p_L\t");
+        Serial.print(_p_L);
+        Serial.print(" |||_p_R ");
+        Serial.print(_p_R);
+        Serial.print(" |||_d ");
         Serial.print(_d);
-        Serial.print(" ||| ");
+        Serial.print(" |||acc_y ");
         Serial.print(avg_acc_y);
-        Serial.print(" ||| ");
+        Serial.print(" |||acc_z ");
         Serial.print(avg_acc_z);
-        Serial.print(" ||| ");
+        Serial.print(" |||ang ");
         Serial.print(angle);
-        Serial.print(" ||| ");
+        Serial.print(" |||n_spd_L ");
         Serial.print(net_speed_L);
-        Serial.print(" ||| ");
+        Serial.print(" |||n_spd_R ");
         Serial.println(net_speed_R);
       }
       #endif
@@ -343,53 +337,56 @@ void loop() {
 
 
     curr_time = millis();
-    if(curr_time - spd_last_time >= 100){
+    if(curr_time - spd_last_time >= 150){
 
-      int16_t curr_pos_L = stepperL.currentPosition();
+      int32_t curr_pos_L = stepperL.currentPosition();
       int16_t curr_pos_R = stepperR.currentPosition();
       runSpeed();
 
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
       // Proportional Control (Speed Loop)
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
-      int16_t delta_pos_L = curr_pos_L - spd_last_pos_L;
-      int16_t delta_pos_R = curr_pos_R - spd_last_pos_R;
+      int16_t delta_pos = curr_pos_L - spd_last_pos_L;
+      delta_pos += curr_pos_R - spd_last_pos_R;
+      delta_pos /= 2;
       float spd_delta_time = curr_time - spd_last_time;
       spd_last_pos_L = curr_pos_L;
       spd_last_pos_R = curr_pos_R;
       spd_last_time = curr_time;
       runSpeed();
 
-      int16_t _p_L = fast_round((delta_pos_L / spd_delta_time) * spd_K_p);
-      int16_t _p_R = fast_round((delta_pos_R / spd_delta_time) * spd_K_p);
+      int16_t _p = fast_round((delta_pos / spd_delta_time) * spd_K_p);
+      if (_p < 10 && _p > -10) _p = 0;
       runSpeed();
 
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
       // Integral Control (Speed Loop)
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-      int16_t _i_L = fast_round(curr_pos_L * spd_K_i);
-      int16_t _i_R = fast_round(curr_pos_R * spd_K_i);
+      int16_t _i = fast_round((curr_pos_L + curr_pos_R) * spd_K_i / 2.0);
+      _i = max(min(_i, 500), -500);
+      if (_i < 5 && _i > -5) _i = 0;
       runSpeed();
 
-      spd_correction_L = -_p_L - _i_L;
-      spd_correction_R = -_p_R - _i_R;
+      if ( (angle < -150 && _i < 0) || (angle > 150 && _i > 0)) angle += _i;
+      angle += - _p;
+
+      if ((delta_pos / spd_delta_time) > 1.8){
+        // halt program if speed is too high
+        while(true){
+          delay(10);
+        }
+      }
 
       #ifdef DEBUG
-      if(curr_time - lastPrintTime2 >= 500){
+      if(curr_time - lastPrintTime2 >= 300){
         lastPrintTime2 = curr_time;
-        Serial.print("speed: \t");
-        Serial.print(_p_L);
-        Serial.print(" ||| ");
-        Serial.print(_p_R);
-        Serial.print(" ||| ");
-        Serial.print(_i_L);
-        Serial.print(" ||| ");
-        Serial.print(_i_R);
-        Serial.print(" ||| ");
-        Serial.print(spd_correction_L);
-        Serial.print(" ||| ");
-        Serial.println(spd_correction_R);
+        Serial.print("speed: _p \t");
+        Serial.print(_p);
+        Serial.print(" |||_i ");
+        Serial.print(_i);
+        Serial.print(" |||spd ");
+        Serial.println((delta_pos / spd_delta_time));
       }
       #endif
     }
@@ -399,9 +396,6 @@ void loop() {
     //---------------------------------------------------------------------------------------------------------------------------------------------------------
     // Set Motor Speeds
     //---------------------------------------------------------------------------------------------------------------------------------------------------------
-    
-    net_speed_L += spd_correction_L + bias_sgn_L * move_bias;
-    net_speed_R += spd_correction_R + bias_sgn_R * move_bias;
 
     if(curr_time - lastSetSpeedTime >= 15){
       lastSetSpeedTime = curr_time;
@@ -422,17 +416,17 @@ void loop() {
       Serial.print(_gx); Serial.print("\t");
       Serial.print(_gy); Serial.print("\t");
       Serial.println(_gz);
-      Serial.print("net_speed: \t");
+      Serial.print("net_speed: b_ang_L\t");
       Serial.print(bias_sgn_L * move_bias);
-      Serial.print(" ||| ");
+      Serial.print(" |||b_ang_R ");
       Serial.print(bias_sgn_R * move_bias);
-      Serial.print(" ||| ");
+      Serial.print(" |||n_spd_L ");
       Serial.print(net_speed_L);
-      Serial.print(" ||| ");
+      Serial.print(" |||n_spd_R ");
       Serial.print(net_speed_R);
-      Serial.print(" ||| ");
+      Serial.print(" |||m_spd_L ");
       Serial.print(stepperL.speed());
-      Serial.print(" ||| ");
+      Serial.print(" |||m_spd_R ");
       Serial.println(stepperR.speed());
     }
     #endif
@@ -468,18 +462,6 @@ void loop() {
 
     newData = false;
   }
-
-  //---------------------------------------------------------------------------------------------------------------------------------------------------------
-  // Movement Timer
-  //---------------------------------------------------------------------------------------------------------------------------------------------------------
-
-  if (move_dir != 0 && (millis() - lastCmdTime) / 1000.0 > move_time) {
-    move_dir = 0;
-    move_bias = 0;
-    move_time = 0;
-    bias_sgn_L = 0;
-    bias_sgn_R = 0;
-  }
   runSpeed();
   
 }
@@ -496,30 +478,37 @@ void runSpeed(){
 void update_cmd(){
   // 1 = bal_K_p, 2 = bal_K_d, 3 = spd_K_p, 4 = spd_K_i
   uint8_t set_K = 0;
+  int16_t bias_dist = 0.0;
+  int8_t bias_sgn_L = 0;
+  int8_t bias_sgn_R = 0;
 
   if(!receivedChars ||
      receivedChars[0] == '\0' || receivedChars[1] == '\0' ||
      receivedChars[2] == '\0' || receivedChars[1] != ':'){
      move_dir = 0;
-     move_bias = 0;
-     move_time = 0;
-     bias_sgn_L = 0;
-     bias_sgn_R = 0;
      return;
   }
 
   switch(receivedChars[0]){
     case 'b':
       move_dir = 1;
+      bias_sgn_L = -1;
+      bias_sgn_R = -1;
       break;
     case 'l':
       move_dir = 2;
+      bias_sgn_L = 1;
+      bias_sgn_R = -1;
       break;
     case 'r':
       move_dir = 3;
+      bias_sgn_L = -1;
+      bias_sgn_R = 1;
       break;
     case 'f':
       move_dir = 4;
+      bias_sgn_L = 1;
+      bias_sgn_R = 1;
       break;
     case 'p':
       set_K = 1;
@@ -535,10 +524,6 @@ void update_cmd(){
       break;
     default:
       move_dir = 0;
-      move_bias = 0;
-      move_time = 0;
-      bias_sgn_L = 0;
-      bias_sgn_R = 0;
       return;
   }
   runSpeed();
@@ -549,39 +534,37 @@ void update_cmd(){
   switch(set_K){
     case 1:
       bal_K_p = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
-      // Serial.print("bal_K_p: ");
-      // Serial.println(bal_K_p);
+      Serial.print("bal_K_p: ");
+      Serial.println(bal_K_p);
       break;
     case 2:
       bal_K_d = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
-      // Serial.print("bal_K_d: ");
-      // Serial.println(bal_K_d);
+      Serial.print("bal_K_d: ");
+      Serial.println(bal_K_d);
       break;
     case 3:
       spd_K_p = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
-      // Serial.print("spd_K_p: ");
-      // Serial.println(spd_K_p);
+      Serial.print("spd_K_p: ");
+      Serial.println(spd_K_p);
       break;
     case 4:
       spd_K_i = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
-      // Serial.print("spd_K_i: ");
-      // Serial.println(spd_K_i);
+      Serial.print("spd_K_i: ");
+      Serial.println(spd_K_i);
       break;
     default:
-      move_time = static_cast<int8_t>(strtol(numStr, &endPtr, 10));
+      // the input shall not exceed 500 or the program will freeze due to safety protection
+      bias_dist = static_cast<int16_t>(strtol(numStr, &endPtr, 10));
       if(endPtr && *endPtr != '\0'){
           move_dir = 0;
-          move_bias = 0;
-          move_time = 0;
-          bias_sgn_L = 0;
-          bias_sgn_R = 0;
           return;
       }
-
-      move_bias = 200;
-      bias_sgn_L = (int8_t)((move_dir - 1) / 2) * 2 - 1;
-      bias_sgn_R = (int8_t)((move_dir - 1) % 2) * 2 - 1;
-      lastCmdTime = millis();
+      stepperL.setCurrentPosition(stepperL.currentPosition() + bias_dist * bias_sgn_L);
+      stepperR.setCurrentPosition(stepperR.currentPosition() + bias_dist * bias_sgn_R);
+      Serial.print(" bias_L: ");
+      Serial.print(bias_dist * bias_sgn_L);
+      Serial.print(" bias_R: ");
+      Serial.print(bias_dist * bias_sgn_R);
       break;
   }
   runSpeed();

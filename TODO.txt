@@ -1,7 +1,13 @@
-sensor fusion with gyro using formula Angle = 0.98*(Angle + gyro*dt) + 0.02*(Accel Angle),  
 
-optimized float calculation and cpu time, 
 
-fix speed jump near balane pt,
 
-naming and debug
+
+move_bias
+acc_w
+bal_p filter
+spd loop refresh time
+motor spd refresh time
+
+encoder polarity
+connection indication of uart
+try dmp readings
