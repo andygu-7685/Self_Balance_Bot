@@ -11,7 +11,10 @@
 // direction toward battery opening is backward
 // positive speed rotate the wheel CCW
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
-
+//p=100
+//d=5
+//s=-30000
+//i=55
 
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -54,7 +57,7 @@ int16_t OFFSET_AZ = 0;
 int16_t OFFSET_GX = 0;
 int16_t OFFSET_GY = 0;
 int16_t OFFSET_GZ = 0;
-int8_t Z_DIR = 1;                     // 1 if mpu is upright, -1 if upside down
+const int8_t Z_DIR = 1;                     // 1 if mpu is upright, -1 if upside down
 
 int16_t ax, ay, az;
 int16_t gx, gy, gz;
@@ -69,8 +72,9 @@ void dmpDataReady() { mpuInterrupt = true; }
 // Movement and UART
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-// 1 = forward, 2 = backward, 3 = left, 4 = right
+// 1 = backward, 2 = left, 3 = right, 4 = forward
 uint8_t move_dir = 0;
+unsigned long last_cmd_time = 0;
 
 // max number of char is 10 in a message
 const uint8_t numChars = 10;
@@ -96,10 +100,11 @@ float bal_K_p = 2.0;
 
 const uint8_t bal_avg_q_size = 5;
 int16_t bal_avg_err_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
-uint8_t bal_dt_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
 uint8_t bal_avg_q_ctr = 0;
-unsigned long bal_last_time = 0;
-float bal_K_d = 15.0;
+float bal_K_d = 25.0;
+
+uint8_t delta_time_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
+unsigned long last_delta_time = 0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Proportional Control (Speed Loop)
@@ -107,14 +112,37 @@ float bal_K_d = 15.0;
 
 int16_t spd_last_pos_L = 0;
 int16_t spd_last_pos_R = 0;
-float spd_K_p = -276.8;
+float spd_K_p = -400.0;
 unsigned long spd_last_time = 0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Integral Control (Speed Loop)
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-float spd_K_i = 1.7;
+float spd_K_i = 1.2;
+
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Proportional Control (Steer Loop)
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+// expected steer speed in degree per second
+int8_t bias_steer_spd = 10;
+int16_t bias_mag = 0;
+// 1 = backward, left; -1 = forward, right
+int8_t bias_sgn = 0;
+
+const uint8_t steer_q_size = bal_avg_q_size;
+int16_t steer_gyr_q_z[steer_q_size] = {0, 0, 0, 0, 0};
+uint8_t steer_q_ctr = 0;
+float steer_K_p = 1.0;
+
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Integral Control (Steer Loop)
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+const uint8_t steer_avg_window = 3;
+int16_t steer_net_angle = 0;
+float steer_K_i = 0.05;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Setup
@@ -176,7 +204,7 @@ void setup() {
   // MPU6050 calibration
   MPU_calibration();
 
-  bal_last_time = millis();
+  last_delta_time = millis();
   spd_last_time = millis();
 }
 
@@ -212,8 +240,8 @@ void loop() {
     unsigned long curr_time = millis();
     runSpeed();
 
-    uint8_t bal_delta_time = min(curr_time - bal_last_time, 200);
-    bal_last_time = curr_time;
+    uint8_t delta_time = min(curr_time - last_delta_time, 200);
+    last_delta_time = curr_time;
 
     // unit in m/s^2
     _ax = (ax+OFFSET_AX) * ACCEL_FACTOR;
@@ -228,6 +256,8 @@ void loop() {
     bal_acc_q_z[bal_q_ctr] = (az + OFFSET_AZ);
     bal_gyr_q_x[bal_q_ctr] = (gx + OFFSET_GX);
     (bal_q_ctr >= bal_q_size - 1) ? bal_q_ctr = 0 : bal_q_ctr++;
+    steer_gyr_q_z[steer_q_ctr] = (gz + OFFSET_GZ);
+    (steer_q_ctr >= steer_q_size - 1) ? steer_q_ctr = 0 : steer_q_ctr++;
     runSpeed();
 
 
@@ -250,9 +280,9 @@ void loop() {
       // acceleration term
       sum = 0;
       {
-        int16_t *ptr = bal_acc_q_z;
-        int16_t *end = bal_acc_q_z + bal_q_size;
-        while (ptr < end) sum += *ptr++;
+        int16_t *ptr_a = bal_acc_q_z;
+        int16_t *end_a = bal_acc_q_z + bal_q_size;
+        while (ptr_a < end_a) sum += *ptr_a++;
         runSpeed();
       }
       // +ive = downward_accel, -ive = upward_accel
@@ -274,7 +304,7 @@ void loop() {
       runSpeed();
 
       float acc_w = 1.0 / (50000.0 * ((net_acc_mag / 16384.0) - 1) * ((net_acc_mag / 16384.0) - 1) + 50.0);
-      int16_t pred_angle = (1.0 - acc_w) * (angle + avg_rot_x * bal_delta_time / 10.0) + acc_w * angle_a * 100.0;
+      int16_t pred_angle = (1.0 - acc_w) * (angle + avg_rot_x * delta_time / 10.0) + acc_w * angle_a * 100.0;
       if (abs(pred_angle - angle) < 1500) angle = pred_angle;
       int16_t _p_L = fast_round(angle * bal_K_p);
       int16_t _p_R = fast_round(angle * bal_K_p);
@@ -287,7 +317,7 @@ void loop() {
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
       bal_avg_err_q[bal_avg_q_ctr] = angle;
-      bal_dt_q[bal_avg_q_ctr] = bal_delta_time;
+      delta_time_q[bal_avg_q_ctr] = delta_time;
       (bal_avg_q_ctr >= bal_avg_q_size - 1) ? bal_avg_q_ctr = 0 : bal_avg_q_ctr++;
 
       uint8_t last_error_index = (bal_avg_q_ctr + 1) % bal_avg_q_size;
@@ -297,10 +327,10 @@ void loop() {
       runSpeed();
       
       {
-        uint8_t *ptr = bal_dt_q;
-        uint8_t *end = bal_dt_q + bal_avg_q_size;
+        uint8_t *ptr = delta_time_q;
+        uint8_t *end = delta_time_q + bal_avg_q_size;
         while (ptr < end) elapsed_time += *ptr++;
-        elapsed_time -= bal_dt_q[last_error_index];
+        elapsed_time -= delta_time_q[last_error_index];
         runSpeed();
       }
 
@@ -346,6 +376,7 @@ void loop() {
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
       // Proportional Control (Speed Loop)
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
+      
       int16_t delta_pos = curr_pos_L - spd_last_pos_L;
       delta_pos += curr_pos_R - spd_last_pos_R;
       delta_pos /= 2;
@@ -371,10 +402,11 @@ void loop() {
       if ( (angle < -150 && _i < 0) || (angle > 150 && _i > 0)) angle += _i;
       angle += - _p;
 
-      if ((delta_pos / spd_delta_time) > 1.8){
+      if ((delta_pos / spd_delta_time) > 5.0){
         // halt program if speed is too high
         while(true){
-          delay(10);
+          delay(1000);
+          Serial.println("speed too high");
         }
       }
 
@@ -392,6 +424,75 @@ void loop() {
     }
 
 
+    {
+
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
+      // Proportional Control (Steer Loop)
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+      if(move_dir == 2 || move_dir == 3) {
+        steer_net_angle = 0;
+        int32_t sum = 0;
+        {
+          int16_t *ptr = steer_gyr_q_z;
+          int16_t *end = steer_gyr_q_z + steer_q_size;
+          while (ptr < end) sum += *ptr++;
+          runSpeed();
+        }
+        // +ive = CCW, -ive = CW looking from top of MPU
+        // rot spd in degree per s
+        float avg_rot_z = (sum / steer_q_size) * ROT_FACTOR;
+        float rot_error = bias_sgn * bias_steer_spd - avg_rot_z;
+        int16_t _p = fast_round(rot_error * steer_K_p);
+
+        net_speed_L += _p;
+        net_speed_R -= _p;
+        runSpeed();
+
+      }
+
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
+      // Integral Control (Steer Loop)
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
+      
+      else{
+        // halt program if window size is too big
+        if (steer_avg_window > steer_q_size){
+          while(true){
+            delay(1000);
+            Serial.println("avg window too big"); 
+          }
+        }
+
+        int32_t sum = 0;
+        {
+          int16_t *ptr = (steer_gyr_q_z + steer_q_ctr) - steer_avg_window;
+          int16_t *end = (steer_gyr_q_z + steer_q_ctr);
+          while (ptr < end) sum += *ptr++;
+          runSpeed();
+        }
+        // +ive = CCW, -ive = CW looking from top of MPU
+        // rot spd in degree per s
+        float avg_rot_z = (sum / steer_avg_window) * ROT_FACTOR;
+
+        uint8_t elapsed_time = 0;
+        {
+          uint8_t *ptr = (delta_time_q + steer_q_ctr) - steer_avg_window + 1;
+          uint8_t *end = (delta_time_q + steer_q_ctr);
+          while (ptr < end) elapsed_time += *ptr++;
+          runSpeed();
+        }
+        steer_net_angle += avg_rot_z * elapsed_time;
+
+        int16_t _i = fast_round(steer_K_i * steer_net_angle);
+        if (_i < 3 && _i > -3) _i = 0;
+
+        net_speed_L += _i;
+        net_speed_R -= _i;
+        runSpeed();
+      }
+
+    }
 
     //---------------------------------------------------------------------------------------------------------------------------------------------------------
     // Set Motor Speeds
@@ -462,6 +563,12 @@ void loop() {
 
     newData = false;
   }
+
+  if((move_dir == 2 || move_dir == 3) && (millis() - last_cmd_time) / 1000.0 >= bias_mag){
+    move_dir = 0;
+    bias_mag = 0;
+    bias_sgn = 0;
+  }
   runSpeed();
   
 }
@@ -476,96 +583,97 @@ void runSpeed(){
 
 
 void update_cmd(){
-  // 1 = bal_K_p, 2 = bal_K_d, 3 = spd_K_p, 4 = spd_K_i
-  uint8_t set_K = 0;
-  int16_t bias_dist = 0.0;
-  int8_t bias_sgn_L = 0;
-  int8_t bias_sgn_R = 0;
+  char* numStr = &receivedChars[2];
+  char* endPtr = NULL;
 
   if(!receivedChars ||
      receivedChars[0] == '\0' || receivedChars[1] == '\0' ||
      receivedChars[2] == '\0' || receivedChars[1] != ':'){
-     move_dir = 0;
      return;
   }
 
   switch(receivedChars[0]){
     case 'b':
       move_dir = 1;
-      bias_sgn_L = -1;
-      bias_sgn_R = -1;
+      bias_sgn = 1;
       break;
     case 'l':
       move_dir = 2;
-      bias_sgn_L = 1;
-      bias_sgn_R = -1;
+      bias_sgn = 1;
       break;
     case 'r':
       move_dir = 3;
-      bias_sgn_L = -1;
-      bias_sgn_R = 1;
+      bias_sgn = -1;
       break;
     case 'f':
       move_dir = 4;
-      bias_sgn_L = 1;
-      bias_sgn_R = 1;
+      bias_sgn = -1;
       break;
     case 'p':
-      set_K = 1;
-      break;
+      bal_K_p = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      Serial.print("bal_K_p: ");
+      Serial.println(bal_K_p);
+      return;
     case 'd':
-      set_K = 2;
-      break;
+      bal_K_d = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      Serial.print("bal_K_d: ");
+      Serial.println(bal_K_d);
+      return;
     case 's':
-      set_K = 3;
-      break;
+      spd_K_p = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      Serial.print("spd_K_p: ");
+      Serial.println(spd_K_p);
+      return;
     case 'i':
-      set_K = 4;
-      break;
+      spd_K_i = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      Serial.print("spd_K_i: ");
+      Serial.println(spd_K_i);
+      return;
+    case 't':
+      steer_K_p = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      Serial.print("steer_K_p: ");
+      Serial.println(steer_K_p);
+      return;
+    case 'k':
+      steer_K_i = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      Serial.print("steer_K_i: ");
+      Serial.println(steer_K_i);
+      return;
+    case 'q':
+      bias_steer_spd = static_cast<int8_t>(strtol(numStr, &endPtr, 10));
+      Serial.print("bias_steer_spd: ");
+      Serial.println(bias_steer_spd);
+      return;
     default:
-      move_dir = 0;
       return;
   }
   runSpeed();
 
-  char* numStr = &receivedChars[2];
-  char* endPtr = NULL;
+  // the input shall not exceed 500 or the program will freeze due to safety protection
+  bias_mag = static_cast<int16_t>(strtol(numStr, &endPtr, 10));
+  if(endPtr && *endPtr != '\0'){
+      move_dir = 0;
+      bias_mag = 0;
+      bias_sgn = 0;
+      return;
+  }
+  runSpeed();
 
-  switch(set_K){
-    case 1:
-      bal_K_p = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
-      Serial.print("bal_K_p: ");
-      Serial.println(bal_K_p);
-      break;
-    case 2:
-      bal_K_d = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
-      Serial.print("bal_K_d: ");
-      Serial.println(bal_K_d);
-      break;
-    case 3:
-      spd_K_p = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
-      Serial.print("spd_K_p: ");
-      Serial.println(spd_K_p);
-      break;
-    case 4:
-      spd_K_i = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
-      Serial.print("spd_K_i: ");
-      Serial.println(spd_K_i);
-      break;
-    default:
-      // the input shall not exceed 500 or the program will freeze due to safety protection
-      bias_dist = static_cast<int16_t>(strtol(numStr, &endPtr, 10));
-      if(endPtr && *endPtr != '\0'){
-          move_dir = 0;
-          return;
-      }
-      stepperL.setCurrentPosition(stepperL.currentPosition() + bias_dist * bias_sgn_L);
-      stepperR.setCurrentPosition(stepperR.currentPosition() + bias_dist * bias_sgn_R);
-      Serial.print(" bias_L: ");
-      Serial.print(bias_dist * bias_sgn_L);
-      Serial.print(" bias_R: ");
-      Serial.print(bias_dist * bias_sgn_R);
-      break;
+  if(move_dir == 1 || move_dir == 4){
+    stepperL.setCurrentPosition(stepperL.currentPosition() + bias_mag * bias_sgn);
+    stepperR.setCurrentPosition(stepperR.currentPosition() + bias_mag * bias_sgn);
+    Serial.print(" bias: ");
+    Serial.print(bias_mag * bias_sgn);
+    Serial.print(" current_pos_L: ");
+    Serial.print(stepperL.currentPosition());
+    Serial.print(" current_pos_R: ");
+    Serial.println(stepperR.currentPosition());
+    move_dir = 0;
+    bias_mag = 0;
+    bias_sgn = 0;
+  }
+  else if(move_dir == 2 || move_dir == 3){
+    last_cmd_time = millis();
   }
   runSpeed();
 }
