@@ -101,7 +101,7 @@ float bal_K_p = 2.0;
 const uint8_t bal_avg_q_size = 5;
 int16_t bal_avg_err_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
 uint8_t bal_avg_q_ctr = 0;
-float bal_K_d = 25.0;
+float bal_K_d = 15.0;
 
 uint8_t delta_time_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
 unsigned long last_delta_time = 0;
@@ -112,14 +112,14 @@ unsigned long last_delta_time = 0;
 
 int16_t spd_last_pos_L = 0;
 int16_t spd_last_pos_R = 0;
-float spd_K_p = -400.0;
+float spd_K_p = -300.0;
 unsigned long spd_last_time = 0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Integral Control (Speed Loop)
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-float spd_K_i = 1.2;
+float spd_K_i = 1.1;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Proportional Control (Steer Loop)
