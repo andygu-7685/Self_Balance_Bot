@@ -11,11 +11,25 @@
 // direction toward battery opening is backward
 // positive speed rotate the wheel CCW
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
-//p=100
-//d=5
-//s=-30000
-//i=55
+//p=1.00
+//d=0.05
+//s=-300.00
+//i=.55
 
+//p=1.20
+//d=15.00
+//s=-100.00
+//i=.30
+
+//p=2.00
+//d=15.00
+//s=-273.83
+//i=1.20
+
+//1.2
+//0.05
+//-0.4
+//0.01
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Macros and Compile Options
@@ -74,10 +88,14 @@ void dmpDataReady() { mpuInterrupt = true; }
 
 // 1 = backward, 2 = left, 3 = right, 4 = forward
 uint8_t move_dir = 0;
+// duration of the command in seconds
+uint8_t cmd_duration = 0;
+// 1 = backward, left; -1 = forward, right
+int8_t bias_sgn = 0;
 unsigned long last_cmd_time = 0;
 
 // max number of char is 10 in a message
-const uint8_t numChars = 10;
+const uint8_t numChars = 20;
 char receivedChars[numChars];
 bool newData = false;
 
@@ -87,12 +105,13 @@ bool newData = false;
 
 // angle of tilt in degree * 100
 int16_t angle = 0;
+
 const uint8_t bal_q_size = 5;
 int16_t bal_acc_q_y[bal_q_size] = {0, 0, 0, 0, 0};
 int16_t bal_acc_q_z[bal_q_size] = {0, 0, 0, 0, 0};
 int16_t bal_gyr_q_x[bal_q_size] = {0, 0, 0, 0, 0};
 uint8_t bal_q_ctr = 0;
-float bal_K_p = 2.0;
+float bal_K_p = 1.2;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Derivative Control (Balance Loop)
@@ -101,7 +120,7 @@ float bal_K_p = 2.0;
 const uint8_t bal_avg_q_size = 5;
 int16_t bal_avg_err_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
 uint8_t bal_avg_q_ctr = 0;
-float bal_K_d = 25.0;
+float bal_K_d = 0.05;
 
 uint8_t delta_time_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
 unsigned long last_delta_time = 0;
@@ -110,26 +129,28 @@ unsigned long last_delta_time = 0;
 // Proportional Control (Speed Loop)
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
+// expected speed in step per second
+int16_t expected_spd = 0;
+
 int16_t spd_last_pos_L = 0;
 int16_t spd_last_pos_R = 0;
-float spd_K_p = -400.0;
+float spd_K_p = -0.25;
+
 unsigned long spd_last_time = 0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Integral Control (Speed Loop)
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-float spd_K_i = 1.2;
+int16_t spd_net_disp = 0;
+float spd_K_i = 0.002;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Proportional Control (Steer Loop)
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
 // expected steer speed in degree per second
-int8_t bias_steer_spd = 10;
-int16_t bias_mag = 0;
-// 1 = backward, left; -1 = forward, right
-int8_t bias_sgn = 0;
+int8_t steer_spd = 10;
 
 const uint8_t steer_q_size = bal_avg_q_size;
 int16_t steer_gyr_q_z[steer_q_size] = {0, 0, 0, 0, 0};
@@ -142,7 +163,7 @@ float steer_K_p = 1.0;
 
 const uint8_t steer_avg_window = 3;
 int16_t steer_net_angle = 0;
-float steer_K_i = 0.05;
+float steer_K_i = 0.0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Setup
@@ -367,9 +388,9 @@ void loop() {
 
 
     curr_time = millis();
-    if(curr_time - spd_last_time >= 150){
+    if(curr_time - spd_last_time >= 100){
 
-      int32_t curr_pos_L = stepperL.currentPosition();
+      int16_t curr_pos_L = stepperL.currentPosition();
       int16_t curr_pos_R = stepperR.currentPosition();
       runSpeed();
 
@@ -377,32 +398,30 @@ void loop() {
       // Proportional Control (Speed Loop)
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
       
-      int16_t delta_pos = curr_pos_L - spd_last_pos_L;
+      int32_t delta_pos = curr_pos_L - spd_last_pos_L;
       delta_pos += curr_pos_R - spd_last_pos_R;
       delta_pos /= 2;
-      float spd_delta_time = curr_time - spd_last_time;
+      uint8_t spd_delta_time = curr_time - spd_last_time;
       spd_last_pos_L = curr_pos_L;
       spd_last_pos_R = curr_pos_R;
       spd_last_time = curr_time;
       runSpeed();
 
-      int16_t _p = fast_round((delta_pos / spd_delta_time) * spd_K_p);
-      if (_p < 10 && _p > -10) _p = 0;
+      int16_t spd_err = (move_dir == 1 || move_dir == 4) * expected_spd * bias_sgn - (delta_pos * 1000 / spd_delta_time);
+      int16_t _p = fast_round(spd_err * spd_K_p);
       runSpeed();
 
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
       // Integral Control (Speed Loop)
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-      int16_t _i = fast_round((curr_pos_L + curr_pos_R) * spd_K_i / 2.0);
-      _i = max(min(_i, 500), -500);
-      if (_i < 5 && _i > -5) _i = 0;
+      spd_net_disp += -spd_err * spd_delta_time;
+      int16_t _i = fast_round(spd_net_disp * spd_K_i);
       runSpeed();
 
-      if ( (angle < -150 && _i < 0) || (angle > 150 && _i > 0)) angle += _i;
-      angle += - _p;
+      angle += _p - _i;
 
-      if ((delta_pos / spd_delta_time) > 5.0){
+      if ((delta_pos / spd_delta_time) > 3.0){
         // halt program if speed is too high
         while(true){
           delay(1000);
@@ -424,6 +443,7 @@ void loop() {
     }
 
 
+
     {
 
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -442,7 +462,7 @@ void loop() {
         // +ive = CCW, -ive = CW looking from top of MPU
         // rot spd in degree per s
         float avg_rot_z = (sum / steer_q_size) * ROT_FACTOR;
-        float rot_error = bias_sgn * bias_steer_spd - avg_rot_z;
+        float rot_error = bias_sgn * steer_spd - avg_rot_z;
         int16_t _p = fast_round(rot_error * steer_K_p);
 
         net_speed_L += _p;
@@ -564,9 +584,9 @@ void loop() {
     newData = false;
   }
 
-  if((move_dir == 2 || move_dir == 3) && (millis() - last_cmd_time) / 1000.0 >= bias_mag){
+  if((move_dir != 0) && (millis() - last_cmd_time) / 1000.0 >= cmd_duration){
     move_dir = 0;
-    bias_mag = 0;
+    cmd_duration = 0;
     bias_sgn = 0;
   }
   runSpeed();
@@ -610,39 +630,44 @@ void update_cmd(){
       bias_sgn = -1;
       break;
     case 'p':
-      bal_K_p = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      bal_K_p = static_cast<int32_t>(strtol(numStr, &endPtr, 10)) / 10000.0;
       Serial.print("bal_K_p: ");
       Serial.println(bal_K_p);
       return;
     case 'd':
-      bal_K_d = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      bal_K_d = static_cast<int32_t>(strtol(numStr, &endPtr, 10)) / 10000.0;
       Serial.print("bal_K_d: ");
       Serial.println(bal_K_d);
       return;
     case 's':
-      spd_K_p = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      spd_K_p = static_cast<int32_t>(strtol(numStr, &endPtr, 10)) / 10000.0;
       Serial.print("spd_K_p: ");
       Serial.println(spd_K_p);
       return;
     case 'i':
-      spd_K_i = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      spd_K_i = static_cast<int32_t>(strtol(numStr, &endPtr, 10)) / 10000.0;
       Serial.print("spd_K_i: ");
       Serial.println(spd_K_i);
       return;
     case 't':
-      steer_K_p = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      steer_K_p = static_cast<int32_t>(strtol(numStr, &endPtr, 10)) / 10000.0;
       Serial.print("steer_K_p: ");
       Serial.println(steer_K_p);
       return;
     case 'k':
-      steer_K_i = static_cast<int16_t>(strtol(numStr, &endPtr, 10)) / 100.0;
+      steer_K_i = static_cast<int32_t>(strtol(numStr, &endPtr, 10)) / 10000.0;
       Serial.print("steer_K_i: ");
       Serial.println(steer_K_i);
       return;
     case 'q':
-      bias_steer_spd = static_cast<int8_t>(strtol(numStr, &endPtr, 10));
-      Serial.print("bias_steer_spd: ");
-      Serial.println(bias_steer_spd);
+      steer_spd = static_cast<int32_t>(strtol(numStr, &endPtr, 10)) / 10000.0;
+      Serial.print("steer_spd: ");
+      Serial.println(steer_spd);
+      return;
+    case 'e':
+      expected_spd = static_cast<int32_t>(strtol(numStr, &endPtr, 10)) / 10000.0;
+      Serial.print("expected_spd: ");
+      Serial.println(expected_spd);
       return;
     default:
       return;
@@ -650,31 +675,16 @@ void update_cmd(){
   runSpeed();
 
   // the input shall not exceed 500 or the program will freeze due to safety protection
-  bias_mag = static_cast<int16_t>(strtol(numStr, &endPtr, 10));
+  cmd_duration = static_cast<int32_t>(strtol(numStr, &endPtr, 10)) / 10000.0;
   if(endPtr && *endPtr != '\0'){
       move_dir = 0;
-      bias_mag = 0;
+      cmd_duration = 0;
       bias_sgn = 0;
       return;
   }
-  runSpeed();
 
-  if(move_dir == 1 || move_dir == 4){
-    stepperL.setCurrentPosition(stepperL.currentPosition() + bias_mag * bias_sgn);
-    stepperR.setCurrentPosition(stepperR.currentPosition() + bias_mag * bias_sgn);
-    Serial.print(" bias: ");
-    Serial.print(bias_mag * bias_sgn);
-    Serial.print(" current_pos_L: ");
-    Serial.print(stepperL.currentPosition());
-    Serial.print(" current_pos_R: ");
-    Serial.println(stepperR.currentPosition());
-    move_dir = 0;
-    bias_mag = 0;
-    bias_sgn = 0;
-  }
-  else if(move_dir == 2 || move_dir == 3){
+  if(move_dir != 0)
     last_cmd_time = millis();
-  }
   runSpeed();
 }
 
