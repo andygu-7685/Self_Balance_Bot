@@ -11,6 +11,8 @@
 // direction toward battery opening is backward
 // positive speed rotate the wheel CCW
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
 //p=1.00
 //d=0.05
 //s=-300.00
@@ -54,9 +56,10 @@ AltSoftSerial altSerial;
 
 #ifdef DEBUG
 unsigned long lastPrintTime1 = 0;
-unsigned long lastPrintTime2 = 0;
+
 unsigned long lastPrintTime3 = 0;
 #endif
+unsigned long lastPrintTime2 = 0;
 unsigned long lastSetSpeedTime = 0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -105,6 +108,7 @@ bool newData = false;
 
 // angle of tilt in degree * 100
 int16_t angle = 0;
+int16_t bias_angle = 0;
 
 const uint8_t bal_q_size = 5;
 int16_t bal_acc_q_y[bal_q_size] = {0, 0, 0, 0, 0};
@@ -130,11 +134,12 @@ unsigned long last_delta_time = 0;
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
 // expected speed in step per second
+// 200-600 for decent spd
 int16_t expected_spd = 0;
 
 int16_t spd_last_pos_L = 0;
 int16_t spd_last_pos_R = 0;
-float spd_K_p = -0.25;
+float spd_K_p = -0.75;
 
 unsigned long spd_last_time = 0;
 
@@ -143,7 +148,7 @@ unsigned long spd_last_time = 0;
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
 int16_t spd_net_disp = 0;
-float spd_K_i = 0.002;
+float spd_K_i = -0.7;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Proportional Control (Steer Loop)
@@ -329,8 +334,10 @@ void loop() {
       if (abs(pred_angle - angle) < 1500) angle = pred_angle;
       int16_t _p_L = fast_round(angle * bal_K_p);
       int16_t _p_R = fast_round(angle * bal_K_p);
-      // if(_p_L < 10 * bal_K_p && _p_L > -10 * bal_K_p) _p_L = 0;
-      // if(_p_R < 10 * bal_K_p && _p_R > -10 * bal_K_p) _p_R = 0;
+      if((_p_L < 10 && _p_L > -10) || (_p_R < 10 && _p_R > -10)) {
+        _p_R = 0;
+        _p_L = 0;
+      }
       runSpeed();
 
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -415,11 +422,13 @@ void loop() {
       // Integral Control (Speed Loop)
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-      spd_net_disp += -spd_err * spd_delta_time;
+      spd_net_disp += -spd_err * spd_delta_time / 1000.0;
+      spd_net_disp *= 0.99;
       int16_t _i = fast_round(spd_net_disp * spd_K_i);
       runSpeed();
 
-      angle += _p - _i;
+      bias_angle = (_p - _i);
+      if(bias_angle < 300 && bias_angle > -300) bias_angle = 0;
 
       if ((delta_pos / spd_delta_time) > 3.0){
         // halt program if speed is too high
@@ -429,17 +438,18 @@ void loop() {
         }
       }
 
-      #ifdef DEBUG
+      // #ifdef DEBUG
       if(curr_time - lastPrintTime2 >= 300){
         lastPrintTime2 = curr_time;
         Serial.print("speed: _p \t");
         Serial.print(_p);
         Serial.print(" |||_i ");
         Serial.print(_i);
-        Serial.print(" |||spd ");
-        Serial.println((delta_pos / spd_delta_time));
+        Serial.print(" |||net_disp ");
+        Serial.println(spd_net_disp);
+        runSpeed();
       }
-      #endif
+      // #endif
     }
 
 
@@ -518,6 +528,8 @@ void loop() {
     // Set Motor Speeds
     //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
+    net_speed_L += fast_round(bias_angle * bal_K_p);
+    net_speed_R += fast_round(bias_angle * bal_K_p);
     if(curr_time - lastSetSpeedTime >= 15){
       lastSetSpeedTime = curr_time;
       stepperL.setSpeed(net_speed_L);
@@ -588,6 +600,7 @@ void loop() {
     move_dir = 0;
     cmd_duration = 0;
     bias_sgn = 0;
+    spd_net_disp = 0;
   }
   runSpeed();
   
@@ -680,6 +693,7 @@ void update_cmd(){
       move_dir = 0;
       cmd_duration = 0;
       bias_sgn = 0;
+      spd_net_disp = 0;
       return;
   }
 
