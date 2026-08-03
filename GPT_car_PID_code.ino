@@ -12,26 +12,10 @@
 // positive speed rotate the wheel CCW
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-
-//p=1.00
-//d=0.05
-//s=-300.00
-//i=.55
-
 //p=1.20
-//d=15.00
-//s=-100.00
-//i=.30
-
-//p=2.00
-//d=15.00
-//s=-273.83
-//i=1.20
-
-//1.2
-//0.05
-//-0.4
-//0.01
+//d=0.05
+//s=-0.75
+//i=-0.7
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Macros and Compile Options
@@ -54,12 +38,9 @@ AccelStepper stepperL(AccelStepper::DRIVER, 11, 10);
 // Pins are fixed: RX=8, TX=9
 AltSoftSerial altSerial;
 
-#ifdef DEBUG
-unsigned long lastPrintTime1 = 0;
-
-unsigned long lastPrintTime3 = 0;
-#endif
+// unsigned long lastPrintTime1 = 0;
 unsigned long lastPrintTime2 = 0;
+// unsigned long lastPrintTime3 = 0;
 unsigned long lastSetSpeedTime = 0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -137,17 +118,26 @@ unsigned long last_delta_time = 0;
 // 200-600 for decent spd
 int16_t expected_spd = 0;
 
-int16_t spd_last_pos_L = 0;
-int16_t spd_last_pos_R = 0;
+int32_t spd_last_pos_L = 0;
+int32_t spd_last_pos_R = 0;
 float spd_K_p = -0.75;
+// float spd_K_p_applied = -0.75;
+// int8_t spd_K_p_ctr = 5;
 
 unsigned long spd_last_time = 0;
+
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+// Derivative Control (Speed Loop)
+//---------------------------------------------------------------------------------------------------------------------------------------------------------
+
+// int16_t last_spd_err = 0;
+// float spd_K_d = 5.0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Integral Control (Speed Loop)
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-int16_t spd_net_disp = 0;
+int32_t spd_net_disp = 0;
 float spd_K_i = -0.7;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -326,7 +316,7 @@ void loop() {
 
       // +ive = CCW, -ive = CW in degree
       float angle_a = atan2(avg_acc_y, avg_acc_z) * 180 / PI;
-      uint16_t net_acc_mag = sqrt((int32_t)(avg_acc_y) * avg_acc_y + (int32_t)(avg_acc_z) * avg_acc_z);
+      uint32_t net_acc_mag = sqrt((int32_t)(avg_acc_y) * avg_acc_y + (int32_t)(avg_acc_z) * avg_acc_z);
       runSpeed();
 
       float acc_w = 1.0 / (50000.0 * ((net_acc_mag / 16384.0) - 1) * ((net_acc_mag / 16384.0) - 1) + 50.0);
@@ -369,27 +359,25 @@ void loop() {
       net_speed_R += _p_R - sgn(_p_R) * abs(_d);
       runSpeed();
 
-      #ifdef DEBUG
-      if(curr_time - lastPrintTime1 >= 500){
-        lastPrintTime1 = curr_time;
-        Serial.print("balance: _p_L\t");
-        Serial.print(_p_L);
-        Serial.print(" |||_p_R ");
-        Serial.print(_p_R);
-        Serial.print(" |||_d ");
-        Serial.print(_d);
-        Serial.print(" |||acc_y ");
-        Serial.print(avg_acc_y);
-        Serial.print(" |||acc_z ");
-        Serial.print(avg_acc_z);
-        Serial.print(" |||ang ");
-        Serial.print(angle);
-        Serial.print(" |||n_spd_L ");
-        Serial.print(net_speed_L);
-        Serial.print(" |||n_spd_R ");
-        Serial.println(net_speed_R);
-      }
-      #endif
+      // if(curr_time - lastPrintTime1 >= 500){
+      //   lastPrintTime1 = curr_time;
+      //   Serial.print("balance: _p_L\t");
+      //   Serial.print(_p_L);
+      //   Serial.print(" |||_p_R ");
+      //   Serial.print(_p_R);
+      //   Serial.print(" |||_d ");
+      //   Serial.print(_d);
+      //   Serial.print(" |||acc_y ");
+      //   Serial.print(avg_acc_y);
+      //   Serial.print(" |||acc_z ");
+      //   Serial.print(avg_acc_z);
+      //   Serial.print(" |||ang ");
+      //   Serial.print(angle);
+      //   Serial.print(" |||n_spd_L ");
+      //   Serial.print(net_speed_L);
+      //   Serial.print(" |||n_spd_R ");
+      //   Serial.println(net_speed_R);
+      // }
     }
 
 
@@ -397,8 +385,8 @@ void loop() {
     curr_time = millis();
     if(curr_time - spd_last_time >= 100){
 
-      int16_t curr_pos_L = stepperL.currentPosition();
-      int16_t curr_pos_R = stepperR.currentPosition();
+      int32_t curr_pos_L = stepperL.currentPosition();
+      int32_t curr_pos_R = stepperR.currentPosition();
       runSpeed();
 
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -408,7 +396,7 @@ void loop() {
       int32_t delta_pos = curr_pos_L - spd_last_pos_L;
       delta_pos += curr_pos_R - spd_last_pos_R;
       delta_pos /= 2;
-      uint8_t spd_delta_time = curr_time - spd_last_time;
+      int16_t spd_delta_time = curr_time - spd_last_time;
       spd_last_pos_L = curr_pos_L;
       spd_last_pos_R = curr_pos_R;
       spd_last_time = curr_time;
@@ -416,19 +404,29 @@ void loop() {
 
       int16_t spd_err = (move_dir == 1 || move_dir == 4) * expected_spd * bias_sgn - (delta_pos * 1000 / spd_delta_time);
       int16_t _p = fast_round(spd_err * spd_K_p);
+      // int16_t scale_factor = (cmd_duration != 0) ? cmd_duration * 10 : 10;
+      // spd_K_p_applied = spd_K_p_ctr * spd_K_p / scale_factor;
+      // if (spd_K_p_ctr < scale_factor) spd_K_p_ctr++;
       runSpeed();
+
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
+      // Derivative Control (Speed Loop)
+      //---------------------------------------------------------------------------------------------------------------------------------------------------------
+      
+      // int16_t delta_spd_err = spd_err - last_spd_err;
+      // last_spd_err = spd_err;
+      // int16_t _d = fast_round(delta_spd_err * spd_K_d / spd_delta_time);
 
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
       // Integral Control (Speed Loop)
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-      spd_net_disp += -spd_err * spd_delta_time / 1000.0;
-      spd_net_disp *= 0.99;
+      spd_net_disp += -spd_err * spd_delta_time / 1000;
       int16_t _i = fast_round(spd_net_disp * spd_K_i);
       runSpeed();
 
-      bias_angle = (_p - _i);
-      if(bias_angle < 300 && bias_angle > -300) bias_angle = 0;
+      bias_angle = (_p - _i);           // (_p - _i - _d);
+      if(bias_angle < 100 && bias_angle > -100) bias_angle = 0;
 
       if ((delta_pos / spd_delta_time) > 3.0){
         // halt program if speed is too high
@@ -437,19 +435,24 @@ void loop() {
           Serial.println("speed too high");
         }
       }
+      runSpeed();
 
-      // #ifdef DEBUG
-      if(curr_time - lastPrintTime2 >= 300){
-        lastPrintTime2 = curr_time;
-        Serial.print("speed: _p \t");
-        Serial.print(_p);
-        Serial.print(" |||_i ");
-        Serial.print(_i);
-        Serial.print(" |||net_disp ");
-        Serial.println(spd_net_disp);
-        runSpeed();
-      }
-      // #endif
+      // if(curr_time - lastPrintTime2 >= 300){
+      //   lastPrintTime2 = curr_time;
+      //   Serial.print("speed: _p \t");
+      //   Serial.print(_p);
+      //   Serial.print(" |||_i ");
+      //   Serial.print(_i);
+      //   Serial.print(" |||net_disp ");
+      //   Serial.print(spd_net_disp);
+      //   Serial.print(" |||_d ");
+      //   Serial.print(_d);
+      //   Serial.print(" |||spd_err ");
+      //   Serial.print(spd_err);
+      //   Serial.print(" |||current_spd ");
+      //   Serial.println((delta_pos * 1000 / spd_delta_time));
+      //   runSpeed();
+      // }
     }
 
 
@@ -537,32 +540,30 @@ void loop() {
     }
     runSpeed();
 
-    #ifdef DEBUG
-    if(curr_time - lastPrintTime3 >= 500){
-      lastPrintTime3 = curr_time;
-      //Print the values to the Serial Monitor
-      Serial.print("a:\t");
-      Serial.print(_ax); Serial.print("\t");
-      Serial.print(_ay); Serial.print("\t");
-      Serial.println(_az);
-      Serial.print("g:\t");
-      Serial.print(_gx); Serial.print("\t");
-      Serial.print(_gy); Serial.print("\t");
-      Serial.println(_gz);
-      Serial.print("net_speed: b_ang_L\t");
-      Serial.print(bias_sgn_L * move_bias);
-      Serial.print(" |||b_ang_R ");
-      Serial.print(bias_sgn_R * move_bias);
-      Serial.print(" |||n_spd_L ");
-      Serial.print(net_speed_L);
-      Serial.print(" |||n_spd_R ");
-      Serial.print(net_speed_R);
-      Serial.print(" |||m_spd_L ");
-      Serial.print(stepperL.speed());
-      Serial.print(" |||m_spd_R ");
-      Serial.println(stepperR.speed());
-    }
-    #endif
+    // if(curr_time - lastPrintTime3 >= 500){
+    //   lastPrintTime3 = curr_time;
+    //   //Print the values to the Serial Monitor
+    //   Serial.print("a:\t");
+    //   Serial.print(_ax); Serial.print("\t");
+    //   Serial.print(_ay); Serial.print("\t");
+    //   Serial.println(_az);
+    //   Serial.print("g:\t");
+    //   Serial.print(_gx); Serial.print("\t");
+    //   Serial.print(_gy); Serial.print("\t");
+    //   Serial.println(_gz);
+    //   Serial.print("net_speed: b_ang_L\t");
+    //   Serial.print(bias_sgn_L * move_bias);
+    //   Serial.print(" |||b_ang_R ");
+    //   Serial.print(bias_sgn_R * move_bias);
+    //   Serial.print(" |||n_spd_L ");
+    //   Serial.print(net_speed_L);
+    //   Serial.print(" |||n_spd_R ");
+    //   Serial.print(net_speed_R);
+    //   Serial.print(" |||m_spd_L ");
+    //   Serial.print(stepperL.speed());
+    //   Serial.print(" |||m_spd_R ");
+    //   Serial.println(stepperR.speed());
+    // }
   }
 
   //---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -629,6 +630,7 @@ void update_cmd(){
     case 'b':
       move_dir = 1;
       bias_sgn = 1;
+      // spd_K_p_ctr = 3;
       break;
     case 'l':
       move_dir = 2;
@@ -641,6 +643,7 @@ void update_cmd(){
     case 'f':
       move_dir = 4;
       bias_sgn = -1;
+      // spd_K_p_ctr = 3;
       break;
     case 'p':
       bal_K_p = static_cast<int32_t>(strtol(numStr, &endPtr, 10)) / 10000.0;
@@ -657,6 +660,11 @@ void update_cmd(){
       Serial.print("spd_K_p: ");
       Serial.println(spd_K_p);
       return;
+    // case 'o':
+    //   spd_K_d = static_cast<int32_t>(strtol(numStr, &endPtr, 10)) / 10000.0;
+    //   Serial.print("spd_K_d: ");
+    //   Serial.println(spd_K_d);
+    //   return;
     case 'i':
       spd_K_i = static_cast<int32_t>(strtol(numStr, &endPtr, 10)) / 10000.0;
       Serial.print("spd_K_i: ");
@@ -697,8 +705,9 @@ void update_cmd(){
       return;
   }
 
-  if(move_dir != 0)
+  if(move_dir != 0){
     last_cmd_time = millis();
+  }
   runSpeed();
 }
 
