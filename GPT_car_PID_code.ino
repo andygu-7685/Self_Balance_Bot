@@ -120,7 +120,7 @@ int16_t expected_spd = 0;
 
 int32_t spd_last_pos_L = 0;
 int32_t spd_last_pos_R = 0;
-float spd_K_p = -0.7;
+float spd_K_p = -0.75;
 int8_t spd_K_p_ctr = 5;
 
 unsigned long spd_last_time = 0;
@@ -137,7 +137,7 @@ float spd_K_d = -20.0;
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
 int32_t spd_net_disp = 0;
-float spd_K_i = -1.5;
+float spd_K_i = -0.7;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Proportional Control (Steer Loop)
@@ -425,7 +425,7 @@ void loop() {
       runSpeed();
 
       bias_angle = (_p - _i - _d);
-      // bias_angle = constrain(bias_angle, -18000, 18000);
+      bias_angle = constrain(bias_angle, -20000, 20000);
       if(bias_angle < 300 && bias_angle > -300) bias_angle = 0;
 
       if ((delta_pos / spd_delta_time) > 3.0){
