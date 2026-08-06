@@ -17,6 +17,11 @@
 //s=-0.75
 //i=-0.7
 
+//p=1.20
+//d=0.05
+//s=-1.7
+//i=-1.7
+
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Macros and Compile Options
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -96,7 +101,7 @@ int16_t bal_acc_q_y[bal_q_size] = {0, 0, 0, 0, 0};
 int16_t bal_acc_q_z[bal_q_size] = {0, 0, 0, 0, 0};
 int16_t bal_gyr_q_x[bal_q_size] = {0, 0, 0, 0, 0};
 uint8_t bal_q_ctr = 0;
-float bal_K_p = 1.2;
+float bal_K_p = 2.0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Derivative Control (Balance Loop)
@@ -105,7 +110,7 @@ float bal_K_p = 1.2;
 const uint8_t bal_avg_q_size = 5;
 int16_t bal_avg_err_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
 uint8_t bal_avg_q_ctr = 0;
-float bal_K_d = 0.05;
+float bal_K_d = -25.0;
 
 uint8_t delta_time_q[bal_avg_q_size] = {0, 0, 0, 0, 0};
 unsigned long last_delta_time = 0;
@@ -120,24 +125,25 @@ int16_t expected_spd = 0;
 
 int32_t spd_last_pos_L = 0;
 int32_t spd_last_pos_R = 0;
-float spd_K_p = -0.75;
+float spd_K_p = -1.4;           //1.7
 int8_t spd_K_p_ctr = 5;
 
 unsigned long spd_last_time = 0;
+unsigned long lastSetAngleTime = 0;
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Derivative Control (Speed Loop)
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
 int16_t last_spd_err = 0;
-float spd_K_d = -20.0;
+float spd_K_d = -0.0;           //65
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Integral Control (Speed Loop)
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
 int32_t spd_net_disp = 0;
-float spd_K_i = -0.7;
+float spd_K_i = -1.4;             //1.7 
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Proportional Control (Steer Loop)
@@ -354,8 +360,8 @@ void loop() {
       int16_t _d = fast_round(delta_error * bal_K_d / elapsed_time);
       // if(_d < 2 && _d > -2) _d = 0;
 
-      net_speed_L += _p_L - sgn(_p_L) * abs(_d);
-      net_speed_R += _p_R - sgn(_p_R) * abs(_d);
+      net_speed_L += _p_L + _d;
+      net_speed_R += _p_R + _d;
       runSpeed();
 
       // if(curr_time - lastPrintTime1 >= 500){
@@ -382,8 +388,7 @@ void loop() {
 
 
     curr_time = millis();
-    if(curr_time - spd_last_time >= 50){
-
+    if(curr_time - spd_last_time >= 1){
       int32_t curr_pos_L = stepperL.currentPosition();
       int32_t curr_pos_R = stepperR.currentPosition();
       runSpeed();
@@ -404,7 +409,7 @@ void loop() {
       int16_t spd_err = (move_dir == 1 || move_dir == 4) * expected_spd * bias_sgn - (delta_pos * 1000 / spd_delta_time);
       (spd_K_p_ctr < 20) ? spd_K_p_ctr++ : spd_K_p_ctr = 20;
       float spd_K_p_applied = spd_K_p_ctr * spd_K_p / 20.0;
-      int16_t _p = fast_round(spd_err * spd_K_p_applied);
+      int16_t _p = fast_round(spd_err * spd_K_p);
       runSpeed();
 
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -414,6 +419,7 @@ void loop() {
       int16_t delta_spd_err = spd_err - last_spd_err;
       last_spd_err = spd_err;
       int16_t _d = fast_round(delta_spd_err * spd_K_d / spd_delta_time);
+      runSpeed();
 
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
       // Integral Control (Speed Loop)
@@ -424,9 +430,13 @@ void loop() {
       int16_t _i = fast_round(spd_net_disp * spd_K_i);
       runSpeed();
 
-      bias_angle = (_p - _i - _d);
-      bias_angle = constrain(bias_angle, -20000, 20000);
-      if(bias_angle < 300 && bias_angle > -300) bias_angle = 0;
+      if(curr_time - lastSetAngleTime >= 30){
+        // bias_angle = 0.62 * bias_angle + 0.38 * (_p - _i - _d);
+        bias_angle = 0.75 * bias_angle + 0.25 * (_p - _i - _d);
+        // bias_angle = constrain(bias_angle, -20000, 20000);
+        if(bias_angle < 300 && bias_angle > -300) bias_angle = 0;
+        lastSetAngleTime = curr_time;
+      }
 
       if ((delta_pos / spd_delta_time) > 3.0){
         // halt program if speed is too high
