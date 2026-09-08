@@ -125,7 +125,7 @@ int16_t expected_spd = 0;
 
 int32_t spd_last_pos_L = 0;
 int32_t spd_last_pos_R = 0;
-float spd_K_p = -1.4;           //1.7
+float spd_K_p = -0.9;           //1.7
 int8_t spd_K_p_ctr = 5;
 
 unsigned long spd_last_time = 0;
@@ -143,7 +143,7 @@ float spd_K_d = -0.0;           //65
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
 int32_t spd_net_disp = 0;
-float spd_K_i = -1.4;             //1.7 
+float spd_K_i = -1.1;             //1.7 
 
 //---------------------------------------------------------------------------------------------------------------------------------------------------------
 // Proportional Control (Steer Loop)
@@ -425,13 +425,14 @@ void loop() {
       // Integral Control (Speed Loop)
       //---------------------------------------------------------------------------------------------------------------------------------------------------------
 
-      spd_net_disp += -spd_err * spd_delta_time / 1000;
+      spd_net_disp += -spd_err * spd_delta_time / 1000.0;
       // spd_net_disp *= 0.999;
       int16_t _i = fast_round(spd_net_disp * spd_K_i);
       runSpeed();
 
       if(curr_time - lastSetAngleTime >= 30){
         // bias_angle = 0.62 * bias_angle + 0.38 * (_p - _i - _d);
+        // improve balance or else the loop react too quickly
         bias_angle = 0.75 * bias_angle + 0.25 * (_p - _i - _d);
         // bias_angle = constrain(bias_angle, -20000, 20000);
         if(bias_angle < 300 && bias_angle > -300) bias_angle = 0;
@@ -447,20 +448,18 @@ void loop() {
       }
       runSpeed();
 
-      // if(curr_time - lastPrintTime2 >= 300){
+
+      // if(curr_time - lastPrintTime2 >= 5){
       //   lastPrintTime2 = curr_time;
-      //   Serial.print("speed: _p \t");
       //   Serial.print(_p);
-      //   Serial.print(" |||_i ");
+      //   Serial.print(",");
       //   Serial.print(_i);
-      //   Serial.print(" |||net_disp ");
-      //   Serial.print(spd_net_disp);
-      //   Serial.print(" |||_d ");
+      //   Serial.print(",");
       //   Serial.print(_d);
-      //   Serial.print(" |||spd_err ");
-      //   Serial.print(spd_err);
-      //   Serial.print(" |||current_spd ");
-      //   Serial.println((delta_pos * 1000 / spd_delta_time));
+      //   Serial.print(",");
+      //   Serial.print(spd_net_disp);
+      //   Serial.print(",");
+      //   Serial.println(spd_err);
       //   runSpeed();
       // }
     }
@@ -611,7 +610,7 @@ void loop() {
     move_dir = 0;
     cmd_duration = 0;
     bias_sgn = 0;
-    spd_net_disp = 0;
+    Serial.println("cmd completed: ");
   }
   runSpeed();
   
@@ -641,6 +640,8 @@ void update_cmd(){
       move_dir = 1;
       bias_sgn = 1;
       spd_K_p_ctr = 1;
+      angle -= 400;
+      Serial.println("backward: ");
       break;
     case 'l':
       move_dir = 2;
@@ -654,6 +655,8 @@ void update_cmd(){
       move_dir = 4;
       bias_sgn = -1;
       spd_K_p_ctr = 1;
+      angle += 400;
+      Serial.println("forward: ");
       break;
     case 'p':
       bal_K_p = static_cast<int32_t>(strtol(numStr, &endPtr, 10)) / 10000.0;
