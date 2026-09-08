@@ -16,10 +16,11 @@ Arduino code for a two-wheel self-balancing robot using an MPU6050, two stepper 
 
 ## Hardware
 
-- Arduino-compatible board
+- Arduino UNO board
 - MPU6050 accelerometer and gyroscope
 - Two stepper motors with stepper drivers
 - Two wheels and a robot chassis
+- raspberry pico 2w for quick tuning
 
 ## Libraries
 
