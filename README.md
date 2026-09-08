@@ -6,6 +6,10 @@ Arduino code for a two-wheel self-balancing robot using an MPU6050, two stepper 
 
 ![Balancing robot demo](balancing_demo_vid-ezgif.com-video-to-gif-converter.gif)
 
+## Movement Demo
+
+![Movement demo](movement_demo_vid_edit-ezgif.com-video-to-gif-converter.gif)
+
 ## Schematic
 
 ![Balance bot schematic](Schematic_Balance-Car_2026-09-08%20(2).png)
